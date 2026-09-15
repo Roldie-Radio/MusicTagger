@@ -110,13 +110,16 @@ jobs:
           # the filename - a URL that quietly redirects elsewhere is caught here.
           $banner = (& "$tools/ffmpeg.exe" -version | Select-Object -First 1)
           Write-Host "bundled: $banner"
-          if ($banner -notmatch 'ffmpeg version (\S+)') { throw "could not read ffmpeg version" }
-          $got = $Matches[1]
+          # [regex]::Match rather than -notmatch + $Matches: whether the
+          # negated operator leaves $Matches populated is a subtlety, and this
+          # states the intent outright.
+          $m = [regex]::Match($banner, 'ffmpeg version (\S+)')
+          if (-not $m.Success) { throw "could not read a version out of: $banner" }
+          $got = $m.Groups[1].Value
           if ($wanted -and $got -notlike "$wanted*") {
             throw "asked for ffmpeg $wanted but bundled $got"
           }
-          "FFMPEG_BUNDLED=$got" | Out-File -Append -FilePath $env:GITHUB_ENV
-          Write-Host "::notice::Bundled ffmpeg $got (pin with FFMPEG_VERSION to make this reproducible)"
+          Write-Host "::notice::Bundled ffmpeg $got (set FFMPEG_VERSION to pin this)"
 
           Get-ChildItem $tools
 
