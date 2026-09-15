@@ -8,6 +8,7 @@ when there was nothing to check the answer against.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,19 @@ from musictag.matching import (
     _length_s,
 )
 from musictag.models import AudioProps, Candidate, Signal, Track, TrackTags
+
+
+# Path parsing has to run against separators the host platform recognises.
+# A literal r"C:\Music\Portishead\Dummy\10 - Glory Box.flac" is a single
+# filename with no parent directories on POSIX, so the album and artist folders
+# the filename fallback reads off the path simply are not there, and it returns
+# None for both without failing in any visible way.
+MUSIC_ROOT = Path("C:/Music") if os.name == "nt" else Path("/Music")
+
+
+def music_path(*parts: str) -> str:
+    """An absolute path under a notional library root, native to this platform."""
+    return str(MUSIC_ROOT.joinpath(*parts))
 
 
 @pytest.fixture
@@ -239,7 +253,7 @@ class TestObservations:
         assert observed["evidence"] < 5
 
     def test_falls_back_to_the_filename(self, matcher):
-        track = Track(path=r"C:\Music\Portishead\Dummy\10 - Glory Box.flac")
+        track = Track(path=music_path("Portishead", "Dummy", "10 - Glory Box.flac"))
         track.current = TrackTags()
         track.props = AudioProps(duration_s=301.0)
         observed = matcher._observations(track)
