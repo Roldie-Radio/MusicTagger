@@ -1,0 +1,6 @@
+# Test-only dependencies. Runtime ones live in requirements.txt.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+pytest>=8.0.0          # the suite itself
+httpx>=0.27.0          # transport behind fastapi's TestClient - tests/test_server.py

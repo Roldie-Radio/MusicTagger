@@ -331,6 +331,7 @@ musictag/
 ## Tests
 
 ```bash
+.venv\Scripts\pip install -r requirements-dev.txt
 .venv\Scripts\python -m pytest
 ```
 
@@ -338,3 +339,9 @@ Audio fixtures are synthesised with numpy and ffmpeg rather than checked in, so
 every defect the analyser looks for is present in a file where the exact signal
 is known. The suite includes a false-positive baseline: a clean file must come
 back quiet, or the detectors are not worth having.
+
+Building those fixtures needs `ffmpeg` on your `PATH`. Without it they skip
+rather than fail, taking 118 of the 377 tests out of the run - so a green result
+on a machine with no ffmpeg is a weaker signal than it looks.
+[`desktop/build-resources/tools/README.md`](desktop/build-resources/tools/README.md)
+has the download links.
