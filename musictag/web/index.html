@@ -56,6 +56,7 @@
 
 <!-- ============================= Notice =========================== -->
 <div class="notice" id="capabilityNotice" hidden></div>
+<div class="notice notice-update" id="updateNotice" hidden></div>
 
 <!-- ============================ Filters =========================== -->
 <section class="toolbar">
@@ -435,6 +436,25 @@
             <small>0 analyses the whole file. Anything else is faster but cannot detect
                    cut-off endings.</small>
           </label>
+        </div>
+
+        <div class="field-group">
+          <h3>Updates</h3>
+          <p class="help">
+            Asks GitHub once every few hours whether a newer MusicTagger has been
+            released, and shows a banner if so. Nothing is ever downloaded or
+            installed automatically - the banner links to the release and you
+            decide. This is the only request the app makes on its own initiative
+            rather than because you asked it to look something up.
+          </p>
+          <label class="check">
+            <input type="checkbox" id="cfg_update_check_enabled">
+            <span>Check for new versions</span>
+          </label>
+          <div class="field-row">
+            <button class="btn btn-ghost btn-sm" id="btnCheckUpdate">Check now</button>
+            <span class="help" id="updateStatusHint"></span>
+          </div>
         </div>
       </section>
 

@@ -1,0 +1,101 @@
+# Builds and publishes the Windows installer when a version tag is pushed.
+#
+# The in-app update check (musictag/update.py) reads GitHub Releases, so this
+# workflow is what makes that feature do anything at all: no release, nothing
+# to find. Tag with the version the code already declares - `git tag v0.2.0`
+# - and the guard step below refuses the build if they disagree.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build
+        required: true
+
+permissions:
+  contents: write          # creating the Release is a write to the repo
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/electron/package-lock.json
+
+      # --- the version the installer claims must be the version tagged -----
+      # An installer stamped 0.1.0 published under tag v0.2.0 makes the update
+      # check permanently wrong: everyone who installs it is told they are on
+      # 0.1.0 and offered 0.2.0 forever. Cheaper to fail here.
+      - name: Tag must match the declared version
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          tag="${tag#v}"
+          declared=$(python -c "import musictag; print(musictag.__version__)")
+          echo "tag=$tag declared=$declared"
+          if [ "$tag" != "$declared" ]; then
+            echo "::error::Tag v$tag does not match musictag/__init__.py ($declared)"
+            exit 1
+          fi
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt pyinstaller
+
+      # --- bundled tools ---------------------------------------------------
+      # Same downloads desktop/build-resources/tools/README.md documents. They
+      # are gitignored (~200MB) so CI fetches them the same way a human would.
+      - name: Fetch ffmpeg and fpcalc
+        shell: pwsh
+        run: |
+          $tools = "desktop/build-resources/tools"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+
+          curl.exe -L --fail -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp -Force
+          Copy-Item (Get-ChildItem -Recurse -Filter ffmpeg.exe ffmpeg-tmp)[0].FullName $tools
+          Copy-Item (Get-ChildItem -Recurse -Filter ffprobe.exe ffmpeg-tmp)[0].FullName $tools
+
+          curl.exe -L --fail -o fpcalc.zip https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip
+          Expand-Archive fpcalc.zip -DestinationPath fpcalc-tmp -Force
+          Copy-Item (Get-ChildItem -Recurse -Filter fpcalc.exe fpcalc-tmp)[0].FullName $tools
+
+          Get-ChildItem $tools
+
+      # --- gate the release on the suite -----------------------------------
+      # ffmpeg is on PATH by the step above, so the 118 tests that skip
+      # without it run here. This is the only place they run automatically.
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD/desktop/build-resources/tools;$env:PATH"
+          python -m pytest
+
+      - name: Freeze the backend
+        run: python -m PyInstaller desktop/backend/backend.spec --distpath desktop/dist --workpath desktop/build --noconfirm
+
+      - name: Build and publish the installer
+        working-directory: desktop/electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm ci
+          npm run dist -- --publish always

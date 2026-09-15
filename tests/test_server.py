@@ -90,6 +90,55 @@ class TestStatus:
         assert buckets["low"] == 1
 
 
+class TestUpdate:
+    """The endpoint only adapts what musictag.update decides - see test_update.py.
+
+    Every test here patches the check out, so the suite never reaches GitHub:
+    a test that depends on a live network is a test that fails on a train.
+    """
+
+    def test_reports_what_the_checker_found(self, client, monkeypatch):
+        from musictag.update import UpdateInfo
+        monkeypatch.setattr(
+            server, "check_for_update",
+            lambda cfg, force=False: UpdateInfo(current="0.1.0", latest="0.2.0",
+                                                available=True, checked=True))
+        data = client.get("/api/update").json()
+        assert data["available"] is True
+        assert data["latest"] == "0.2.0"
+        assert data["current"] == "0.1.0"
+
+    def test_force_reaches_the_checker(self, client, monkeypatch):
+        from musictag.update import UpdateInfo
+        seen = {}
+
+        def fake(cfg, force=False):
+            seen["force"] = force
+            return UpdateInfo(current="0.1.0")
+
+        monkeypatch.setattr(server, "check_for_update", fake)
+        client.get("/api/update")
+        assert seen["force"] is False
+        client.get("/api/update?force=true")
+        assert seen["force"] is True
+
+    def test_a_failed_check_is_still_a_200(self, client, monkeypatch):
+        """The UI has to be able to tell "no update" from "the call broke".
+
+        A 500 here would surface as a generic error toast on a page that is
+        working perfectly well, over a request the user never asked to make.
+        """
+        from musictag.update import UpdateInfo
+        monkeypatch.setattr(
+            server, "check_for_update",
+            lambda cfg, force=False: UpdateInfo(current="0.1.0", error="403 rate limited"))
+        response = client.get("/api/update")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["available"] is False
+        assert "403" in body["error"]
+
+
 class TestConfig:
     def test_get_config_masks_the_api_key(self, client):
         client.config.acoustid_api_key = "supersecret123"

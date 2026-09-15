@@ -60,6 +60,12 @@ class Config:
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
 
+    # --- updates ---------------------------------------------------------
+    # The one request the app makes on its own initiative rather than because
+    # the user asked for something, so it is switchable off. Nothing is ever
+    # downloaded or installed automatically - see musictag/update.py.
+    update_check_enabled: bool = True
+
     # --- misc ------------------------------------------------------------
     scan_workers: int = 8
     identify_workers: int = 4                 # network bound; MB limiter serialises anyway

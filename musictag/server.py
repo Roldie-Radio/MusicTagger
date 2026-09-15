@@ -34,6 +34,7 @@ from .organize import plan_all, plan_path
 from .quality import analyze_track
 from .state import get_state
 from .tags import SUPPORTED_EXTENSIONS, read_embedded_art
+from .update import check_for_update
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +114,18 @@ def api_status() -> dict[str, Any]:
         # So the UI can explain a quality badge without hardcoding the numbers.
         "quality_scale": quality_scale(),
     }
+
+
+@app.get("/api/update")
+def api_update(force: bool = False) -> dict[str, Any]:
+    """Is there a newer release? Deliberately not part of /api/status.
+
+    /api/status is polled while jobs run, and is expected to answer instantly
+    from local state. This one can go out to the network and block for a few
+    seconds on a cold cache, so it stays a separate call the UI makes once,
+    after the page is already usable.
+    """
+    return check_for_update(get_config(), force=force).to_dict()
 
 
 @app.get("/api/config")
