@@ -3,6 +3,7 @@
   "productName": "MusicTagger",
   "version": "0.1.0",
   "description": "Automatic music tagging, Plex organisation and audio quality analysis.",
+  "author": "Roldie-Radio",
   "private": true,
   "main": "main.js",
   "scripts": {
