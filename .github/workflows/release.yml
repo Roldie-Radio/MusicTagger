@@ -1,9 +1,23 @@
-# Builds and publishes the Windows installer when a version tag is pushed.
+# Builds and publishes the Windows installer.
 #
 # The in-app update check (musictag/update.py) reads GitHub Releases, so this
 # workflow is what makes that feature do anything at all: no release, nothing
-# to find. Tag with the version the code already declares - `git tag v0.2.0`
-# - and the guard step below refuses the build if they disagree.
+# to find.
+#
+# Two ways in, because pushing a tag is not always available - some tokens are
+# scoped to refs/heads/ and are refused on refs/tags/:
+#
+#   1. Push a tag (`git tag v0.2.0 && git push origin v0.2.0`). The guard step
+#      below refuses the build if the tag and the declared version disagree.
+#   2. Run this workflow by hand from any branch. No tag needed: the version
+#      comes from musictag/__init__.py, and publishing the resulting draft
+#      release is what creates the tag, because GitHub's Releases API mints a
+#      tag that does not exist yet when a release naming it is published.
+#
+# Either way electron-builder uploads to a DRAFT release, so the installer can
+# be checked before anything becomes public - and until that draft is
+# published, /releases/latest keeps returning 404 and the in-app check keeps
+# correctly reporting that there is nothing to update to.
 
 name: Release
 
@@ -11,10 +25,6 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing tag to build
-        required: true
 
 permissions:
   contents: write          # creating the Release is a write to the repo
@@ -25,8 +35,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -44,10 +52,10 @@ jobs:
       # check permanently wrong: everyone who installs it is told they are on
       # 0.1.0 and offered 0.2.0 forever. Cheaper to fail here.
       - name: Tag must match the declared version
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          tag="${tag#v}"
+          tag="${GITHUB_REF_NAME#v}"
           declared=$(python -c "import musictag; print(musictag.__version__)")
           echo "tag=$tag declared=$declared"
           if [ "$tag" != "$declared" ]; then

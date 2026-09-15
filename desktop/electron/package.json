@@ -21,7 +21,8 @@
       {
         "provider": "github",
         "owner": "Roldie-Radio",
-        "repo": "MusicTagger"
+        "repo": "MusicTagger",
+        "releaseType": "draft"
       }
     ],
     "directories": {
