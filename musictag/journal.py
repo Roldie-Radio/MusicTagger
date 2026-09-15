@@ -1,0 +1,188 @@
+"""An undo journal for everything that touches the filesystem.
+
+Automatic tagging edits files in place, so every write records what was there
+before. Nothing here deletes user data: undoing a *copy* reports the copy it
+made rather than removing it, because guessing which file you meant to keep is
+exactly the sort of decision a program should not make on your behalf.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import sqlite3
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional
+
+from .config import JOURNAL_DB
+from .models import TrackTags
+from .tags import write_file
+
+
+@dataclass
+class UndoResult:
+    restored: int = 0
+    skipped: int = 0
+    failed: int = 0
+    messages: list[str] = None
+
+    def __post_init__(self):
+        if self.messages is None:
+            self.messages = []
+
+
+class Journal:
+    def __init__(self, path: Path | None = None):
+        self.path = path or JOURNAL_DB
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
+        conn = self._conn()
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS batches ("
+            " id TEXT PRIMARY KEY, started REAL, finished REAL,"
+            " description TEXT, counts TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS entries ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " batch_id TEXT NOT NULL,"
+            " ts REAL NOT NULL,"
+            " op TEXT NOT NULL,"          # tags | move | copy | cover
+            " src TEXT NOT NULL,"
+            " dest TEXT,"
+            " prev_tags TEXT,"
+            " ok INTEGER DEFAULT 1,"
+            " error TEXT)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_batch ON entries(batch_id)")
+        conn.commit()
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.row_factory = sqlite3.Row
+            self._local.conn = conn
+        return conn
+
+    # ------------------------------------------------------------------
+    def start_batch(self, description: str) -> str:
+        batch_id = uuid.uuid4().hex[:12]
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO batches (id, started, description, counts) VALUES (?, ?, ?, ?)",
+            (batch_id, time.time(), description, "{}"),
+        )
+        conn.commit()
+        return batch_id
+
+    def finish_batch(self, batch_id: str, counts: dict[str, Any]) -> None:
+        conn = self._conn()
+        conn.execute(
+            "UPDATE batches SET finished = ?, counts = ? WHERE id = ?",
+            (time.time(), json.dumps(counts), batch_id),
+        )
+        conn.commit()
+
+    def record(self, batch_id: str, op: str, src: str, *, dest: Optional[str] = None,
+               prev_tags: Optional[TrackTags] = None, ok: bool = True,
+               error: Optional[str] = None) -> None:
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO entries (batch_id, ts, op, src, dest, prev_tags, ok, error)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (batch_id, time.time(), op, src, dest,
+             json.dumps(prev_tags.to_dict()) if prev_tags else None,
+             1 if ok else 0, error),
+        )
+        conn.commit()
+
+    # ------------------------------------------------------------------
+    def list_batches(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT b.*, (SELECT COUNT(*) FROM entries e WHERE e.batch_id = b.id) AS entry_count"
+            " FROM batches b ORDER BY b.started DESC LIMIT ?", (limit,)
+        ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["counts"] = json.loads(item.get("counts") or "{}")
+            except json.JSONDecodeError:
+                item["counts"] = {}
+            out.append(item)
+        return out
+
+    def batch_entries(self, batch_id: str) -> list[dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT * FROM entries WHERE batch_id = ? ORDER BY id", (batch_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    def undo(self, batch_id: str, *, id3v2_version: int = 4) -> UndoResult:
+        """Reverse a batch: files move back first, then tags are restored."""
+        result = UndoResult()
+        entries = [e for e in self.batch_entries(batch_id) if e["ok"]]
+
+        # Reverse order so a move followed by a tag write unwinds cleanly.
+        for entry in reversed(entries):
+            op, src, dest = entry["op"], entry["src"], entry["dest"]
+            try:
+                if op == "move" and dest:
+                    dest_path, src_path = Path(dest), Path(src)
+                    if not dest_path.exists():
+                        result.skipped += 1
+                        result.messages.append(f"Already gone, not restored: {dest}")
+                        continue
+                    src_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(dest_path), str(src_path))
+                    result.restored += 1
+                elif op == "copy" and dest:
+                    # Deliberately not deleted - see module docstring.
+                    result.skipped += 1
+                    result.messages.append(f"Copy left in place (delete manually if unwanted): {dest}")
+                elif op == "tags" and entry["prev_tags"]:
+                    target = Path(src)
+                    if not target.exists():
+                        # It may have been moved in the same batch and just restored.
+                        result.skipped += 1
+                        continue
+                    prev = TrackTags.from_dict(json.loads(entry["prev_tags"]))
+                    write_file(target, prev, id3v2_version=id3v2_version)
+                    result.restored += 1
+                elif op == "cover" and dest:
+                    result.skipped += 1
+                    result.messages.append(f"Cover file left in place: {dest}")
+            except Exception as exc:  # noqa: BLE001
+                result.failed += 1
+                result.messages.append(f"{op} undo failed for {src}: {exc}")
+        return result
+
+    def prune(self, keep: int = 100) -> int:
+        """Drop the oldest batches so the journal does not grow without bound."""
+        conn = self._conn()
+        old = conn.execute(
+            "SELECT id FROM batches ORDER BY started DESC LIMIT -1 OFFSET ?", (keep,)
+        ).fetchall()
+        ids = [r["id"] for r in old]
+        for batch_id in ids:
+            conn.execute("DELETE FROM entries WHERE batch_id = ?", (batch_id,))
+            conn.execute("DELETE FROM batches WHERE id = ?", (batch_id,))
+        conn.commit()
+        return len(ids)
+
+
+_journal: Journal | None = None
+
+
+def get_journal() -> Journal:
+    global _journal
+    if _journal is None:
+        _journal = Journal()
+    return _journal

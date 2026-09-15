@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MusicTagger</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127925;</text></svg>">
+</head>
+<body>
+
+<!-- ============================ Header ============================ -->
+<header class="app-header">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 18V5l12-2v13" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+      <circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+    </svg>
+    <div>
+      <h1>MusicTagger</h1>
+      <p class="brand-sub" id="libraryLabel">No library selected</p>
+    </div>
+  </div>
+
+  <div class="header-actions">
+    <button class="btn" id="btnPickFolder">
+      <span class="icon">📁</span> Choose folder
+    </button>
+    <button class="btn" id="btnPickPlexFolder" title="Set your Plex Music folder">
+      <span class="icon">🎯</span> <span id="plexFolderLabel">Plex folder</span>
+    </button>
+    <button class="btn btn-primary" id="btnIdentify" disabled>Tag</button>
+    <button class="btn btn-primary" id="btnQuality" disabled>Check Quality</button>
+    <button class="btn btn-export" id="btnExport" disabled>Export to Plex</button>
+    <button class="btn btn-icon" id="btnTheme" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    <button class="btn btn-icon" id="btnSettings" title="Settings" aria-label="Settings">⚙</button>
+  </div>
+</header>
+
+<!-- ========================= Job progress ========================= -->
+<div class="job-bar" id="jobBar" hidden>
+  <div class="job-info">
+    <span class="spinner"></span>
+    <span id="jobTitle">Working…</span>
+    <span class="job-detail" id="jobDetail"></span>
+  </div>
+  <div class="job-progress"><div class="job-progress-fill" id="jobFill"></div></div>
+  <span class="job-count" id="jobCount"></span>
+  <button class="btn btn-ghost btn-sm" id="btnCancelJob">Cancel</button>
+</div>
+
+<!-- =========================== Stat strip ========================= -->
+<section class="stats" id="stats"></section>
+
+<!-- ============================= Notice =========================== -->
+<div class="notice" id="capabilityNotice" hidden></div>
+
+<!-- ============================ Filters =========================== -->
+<section class="toolbar">
+  <div class="search-wrap">
+    <span class="search-icon">🔎</span>
+    <input type="search" id="search" placeholder="Search title, artist, album or path…" autocomplete="off">
+  </div>
+
+  <div class="chips" id="bucketChips">
+    <button class="chip is-active" data-bucket="">All</button>
+    <button class="chip" data-bucket="high"><i class="dot dot-high"></i>Confident</button>
+    <button class="chip" data-bucket="review"><i class="dot dot-review"></i>Needs review</button>
+    <button class="chip" data-bucket="low"><i class="dot dot-low"></i>Uncertain</button>
+    <button class="chip" data-bucket="unidentified"><i class="dot dot-none"></i>Not identified</button>
+  </div>
+
+  <select id="issueFilter" class="select" title="Filter by audio quality findings">
+    <option value="">Any quality</option>
+    <option value="any">Has findings</option>
+    <option value="high">Serious findings</option>
+    <option value="medium">Moderate findings</option>
+  </select>
+
+  <select id="sortBy" class="select" title="Sort order">
+    <option value="path">Sort: folder</option>
+    <option value="confidence">Sort: least confident</option>
+    <option value="confidence_desc">Sort: most confident</option>
+    <option value="quality">Sort: worst quality</option>
+    <option value="title">Sort: title</option>
+  </select>
+
+  <div class="toolbar-right">
+    <select id="valuesMode" class="select" title="Which values the grid shows" hidden>
+      <option value="proposed">Values: proposed</option>
+      <option value="current">Values: current</option>
+    </select>
+    <button class="btn btn-sm" id="btnColumns" hidden>Columns…</button>
+
+    <div class="seg" id="viewToggle" role="group" aria-label="View">
+      <button class="seg-btn is-active" data-view="review" title="Compare current tags with proposed">Review</button>
+      <button class="seg-btn" data-view="grid" title="Spreadsheet of tag fields">Columns</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= Table ============================ -->
+<main class="table-wrap">
+  <div class="table-head" id="tableHead"></div>
+  <div id="trackList" class="track-list"></div>
+  <div id="emptyState" class="empty">
+    <div class="empty-art">🎵</div>
+    <h2>Nothing scanned yet</h2>
+    <p>Choose a music folder and it scans automatically. Nothing is written to
+       your files until you explicitly apply changes.</p>
+    <button class="btn btn-primary" id="btnPickFolder2">Choose a folder</button>
+  </div>
+  <div class="pager" id="pager" hidden>
+    <button class="btn btn-ghost btn-sm" id="btnPrev">← Previous</button>
+    <span id="pagerLabel"></span>
+    <button class="btn btn-ghost btn-sm" id="btnNext">Next →</button>
+  </div>
+</main>
+
+<!-- ========================== Action bar ========================== -->
+<div class="action-bar" id="actionBar" hidden>
+  <div class="action-summary">
+    <strong id="selCount">0</strong> selected
+    <span class="action-hint" id="selHint"></span>
+  </div>
+  <label class="switch">
+    <input type="checkbox" id="optOrganize">
+    <span>Also reorganise into Plex folders</span>
+  </label>
+  <button class="btn btn-ghost" id="btnPreview">Preview changes</button>
+  <button class="btn btn-primary" id="btnApply">Apply to files</button>
+</div>
+
+<!-- ======================== Folder picker ========================= -->
+<div class="modal" id="pickerModal" hidden>
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2 id="pickerTitle">Choose your music folder</h2>
+      <button class="btn btn-icon btn-ghost" data-close="pickerModal">✕</button>
+    </header>
+    <div class="picker-path" id="pickerPath"></div>
+    <div class="picker-list" id="pickerList"></div>
+    <footer class="modal-foot">
+      <span class="picker-count" id="pickerCount"></span>
+      <button class="btn btn-ghost" data-close="pickerModal">Cancel</button>
+      <button class="btn btn-primary" id="btnPickConfirm" disabled>Use this folder</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ========================== Preview modal ======================= -->
+<div class="modal" id="previewModal" hidden>
+  <div class="modal-card modal-wide">
+    <header class="modal-head">
+      <h2>Preview</h2>
+      <button class="btn btn-icon btn-ghost" data-close="previewModal">✕</button>
+    </header>
+    <div class="modal-body" id="previewBody"></div>
+    <footer class="modal-foot">
+      <button class="btn btn-ghost" data-close="previewModal">Close</button>
+      <button class="btn btn-primary" id="btnPreviewApply">Apply for real</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ========================= Export to Plex ======================== -->
+<div class="modal" id="exportModal" hidden>
+  <div class="modal-card modal-wide">
+    <header class="modal-head">
+      <h2>Export to Plex</h2>
+      <button class="btn btn-icon btn-ghost" data-close="exportModal">✕</button>
+    </header>
+    <div class="modal-body" id="exportBody">
+      <div class="export-summary" id="exportSummary"></div>
+      <div class="export-dupes" id="exportDupes"></div>
+      <div class="export-ready" id="exportReady"></div>
+    </div>
+    <footer class="modal-foot">
+      <span class="export-status" id="exportStatus"></span>
+      <button class="btn btn-ghost" data-close="exportModal">Cancel</button>
+      <button class="btn btn-export" id="btnExportCommit" disabled>Export</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ========================= Column picker ======================== -->
+<div class="modal" id="columnsModal" hidden>
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2>Choose columns</h2>
+      <button class="btn btn-icon btn-ghost" data-close="columnsModal">✕</button>
+    </header>
+    <div class="modal-body">
+      <p class="help">
+        Click any column heading to sort by it. Double-click a tag cell to edit
+        that value directly.
+      </p>
+      <div class="column-picker" id="columnPicker"></div>
+    </div>
+    <footer class="modal-foot">
+      <button class="btn btn-ghost" id="btnResetColumns">Reset to defaults</button>
+      <button class="btn btn-primary" data-close="columnsModal">Done</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ====================== Quality scale help ====================== -->
+<div class="modal" id="qualityHelpModal" hidden>
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2>Reading a quality badge</h2>
+      <button class="btn btn-icon btn-ghost" data-close="qualityHelpModal">✕</button>
+    </header>
+    <div class="modal-body">
+      <div class="badge-demo">
+        <span class="qbadge q-high"><span>70</span><span>Serious</span></span>
+        <div class="badge-demo-legend">
+          <div><strong>70</strong> — the overall score</div>
+          <div><strong>Serious</strong> — the worst single problem found</div>
+        </div>
+      </div>
+
+      <p class="help">
+        They are two different things, which is why a file can read
+        <em>94 · Minor</em> or <em>70 · Serious</em>.
+      </p>
+
+      <div class="field-group">
+        <h3>The number: how much is wrong in total</h3>
+        <p class="help">
+          Every file starts at <strong>100</strong>. Each finding deducts points
+          according to how serious it is. A file with nothing wrong stays at 100.
+        </p>
+      </div>
+
+      <div class="field-group">
+        <h3>The word: how bad the worst problem is</h3>
+        <p class="help">
+          A file can score well overall and still have one serious fault worth
+          acting on. The word tells you whether anything needs your attention.
+        </p>
+        <div class="scale-table" id="scaleTable"></div>
+      </div>
+
+      <p class="help">
+        Nothing here changes your files — it is a report. Expand any row to see
+        exactly what was measured and why each finding was raised.
+      </p>
+    </div>
+    <footer class="modal-foot">
+      <button class="btn btn-primary" data-close="qualityHelpModal">Got it</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ========================= Settings drawer ====================== -->
+<div class="modal" id="settingsModal" hidden>
+  <div class="modal-card modal-wide">
+    <header class="modal-head">
+      <h2>Settings</h2>
+      <button class="btn btn-icon btn-ghost" data-close="settingsModal">✕</button>
+    </header>
+
+    <div class="modal-body">
+      <nav class="tabs" id="settingsTabs">
+        <button class="tab is-active" data-tab="identify">Identification</button>
+        <button class="tab" data-tab="plex">Plex &amp; files</button>
+        <button class="tab" data-tab="quality">Quality</button>
+        <button class="tab" data-tab="history">History</button>
+      </nav>
+
+      <!-- Identification ------------------------------------------->
+      <section class="tab-panel is-active" data-panel="identify">
+        <div class="field-group">
+          <h3>Acoustic fingerprinting</h3>
+          <p class="help">
+            Fingerprinting identifies a track from the audio itself, so it works even
+            when the file has no tags and a meaningless name. It needs a free AcoustID
+            key and the <code>fpcalc</code> tool. Without them the app falls back to
+            matching on existing tags and filenames.
+          </p>
+          <label class="field">
+            <span>AcoustID API key</span>
+            <input type="text" id="cfg_acoustid_api_key" placeholder="Get one free at acoustid.org/new-application">
+          </label>
+          <div class="field-row">
+            <label class="field grow">
+              <span>fpcalc path</span>
+              <input type="text" id="cfg_fpcalc_path" placeholder="Leave blank to search your PATH">
+            </label>
+            <button class="btn" id="btnInstallFpcalc">Download fpcalc</button>
+          </div>
+          <p class="help" id="fpcalcHint"></p>
+        </div>
+
+        <div class="field-group">
+          <h3>MusicBrainz</h3>
+          <label class="field">
+            <span>Contact (email or URL)</span>
+            <input type="text" id="cfg_musicbrainz_contact" placeholder="you@example.com">
+            <small>MusicBrainz asks every client to identify itself. Optional, but polite.</small>
+          </label>
+          <label class="field">
+            <span>Seconds between requests</span>
+            <input type="number" id="cfg_musicbrainz_rate_limit" min="1" step="0.5">
+            <small>MusicBrainz's published limit is one request per second. Going faster gets you blocked.</small>
+          </label>
+          <div class="field-row">
+            <button class="btn" id="btnClearLookupCache">Clear cached lookups</button>
+            <small id="lookupCacheInfo"></small>
+          </div>
+          <p class="help">
+            A failed or empty lookup is remembered for up to 30 days so re-scanning
+            doesn't hammer MusicBrainz with the same question. If a track's confidence
+            looks wrong because a lookup should have found something and didn't,
+            clear the cache and run Tag again to force every lookup fresh.
+          </p>
+        </div>
+
+        <div class="field-group">
+          <h3>Confidence thresholds</h3>
+          <label class="field">
+            <span>Treat as confident at or above (%)</span>
+            <input type="number" id="cfg_auto_apply_threshold" min="50" max="100">
+          </label>
+          <label class="field">
+            <span>Flag for review below (%)</span>
+            <input type="number" id="cfg_review_threshold" min="0" max="100">
+          </label>
+          <label class="check">
+            <input type="checkbox" id="cfg_preserve_existing_tags">
+            <span>Only fill in blank fields, never overwrite existing tags</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- Plex ----------------------------------------------------->
+      <section class="tab-panel" data-panel="plex">
+        <div class="field-group">
+          <h3>How Plex reads your library</h3>
+          <p class="help">
+            Plex uses <strong>embedded tags</strong> to identify and group music, and
+            <strong>folder structure</strong> as its fallback and for artist/album
+            browsing. This app writes both. The field that matters most is
+            <strong>album artist</strong> — without it, a compilation splits into one
+            album per track artist.
+          </p>
+        </div>
+
+        <div class="field-group">
+          <h3>Tag writing</h3>
+          <label class="check">
+            <input type="checkbox" id="cfg_write_cover_art">
+            <span>Embed cover art in each file</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="cfg_write_cover_file">
+            <span>Also save cover.jpg in the album folder</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="cfg_write_musicbrainz_ids">
+            <span>Write MusicBrainz IDs (helps Plex and future re-tagging)</span>
+          </label>
+          <label class="field">
+            <span>ID3 version for MP3</span>
+            <select id="cfg_id3v2_version">
+              <option value="4">ID3v2.4 (recommended)</option>
+              <option value="3">ID3v2.3 (maximum compatibility)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Name to use for compilations</span>
+            <input type="text" id="cfg_various_artists_name">
+          </label>
+        </div>
+
+        <div class="field-group">
+          <h3>Folder organisation</h3>
+          <label class="check">
+            <input type="checkbox" id="cfg_organize_enabled">
+            <span>Enable reorganising files into a Plex-friendly tree</span>
+          </label>
+          <label class="field">
+            <span>Mode</span>
+            <select id="cfg_organize_mode">
+              <option value="move">Move files</option>
+              <option value="copy">Copy files (leave originals alone)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Plex Music folder</span>
+            <div class="field-with-button">
+              <input type="text" id="cfg_organize_root" placeholder="Blank = reorganise inside the library folder">
+              <button type="button" class="btn btn-sm" id="btnPickPlexRoot">Browse…</button>
+            </div>
+            <small>Also where the "Export to Plex" button sends reviewed tracks.</small>
+          </label>
+          <label class="field">
+            <span>Folder template</span>
+            <input type="text" id="cfg_folder_template">
+            <small>Available: {album_artist} {artist} {album} {year} {year_suffix} {genre}</small>
+          </label>
+          <label class="field">
+            <span>Filename template</span>
+            <input type="text" id="cfg_file_template">
+            <small>Available: {track} {track:02d} {disc} {disc_prefix} {title} {artist}</small>
+          </label>
+          <div class="template-preview" id="templatePreview"></div>
+        </div>
+      </section>
+
+      <!-- Quality -------------------------------------------------->
+      <section class="tab-panel" data-panel="quality">
+        <div class="field-group">
+          <h3>Audio analysis</h3>
+          <p class="help">
+            Decodes each file and measures it: spectral roll-off (which exposes
+            fake lossless files and inflated bitrates), clipping, clicks and pops,
+            mid-track dropouts, and tracks that stop before they should.
+            Needs ffmpeg.
+          </p>
+          <label class="field">
+            <span>ffmpeg path</span>
+            <input type="text" id="cfg_ffmpeg_path" placeholder="Leave blank to search your PATH">
+          </label>
+          <label class="field">
+            <span>Parallel workers</span>
+            <input type="number" id="cfg_quality_workers" min="1" max="16">
+          </label>
+          <label class="field">
+            <span>Seconds to analyse per file</span>
+            <input type="number" id="cfg_quality_max_seconds" min="0">
+            <small>0 analyses the whole file. Anything else is faster but cannot detect
+                   cut-off endings.</small>
+          </label>
+        </div>
+      </section>
+
+      <!-- History -------------------------------------------------->
+      <section class="tab-panel" data-panel="history">
+        <div class="field-group">
+          <h3>Change history</h3>
+          <p class="help">Every batch of writes is journalled. Undo restores the previous
+             tags and moves files back where they came from.</p>
+          <div id="historyList" class="history-list"></div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="modal-foot">
+      <span class="save-state" id="saveState"></span>
+      <button class="btn btn-ghost" data-close="settingsModal">Close</button>
+      <button class="btn btn-primary" id="btnSaveSettings">Save settings</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ============================= Toasts =========================== -->
+<div class="toasts" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

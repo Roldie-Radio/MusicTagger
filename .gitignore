@@ -1,0 +1,30 @@
+# --- Python -----------------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Build output -----------------------------------------------------------
+# "build/" and "dist/" match at any depth, so these also cover the PyInstaller
+# output under desktop/.
+build/
+dist/
+node_modules/
+desktop/release/          # the packaged installer - ~150 MB per build
+
+# --- Bundled third-party tools ----------------------------------------------
+# ffmpeg.exe and ffprobe.exe are ~99 MB each: close enough to GitHub's 100 MB
+# hard limit to be a problem, permanent weight in the history, and someone
+# else's binaries to be redistributing. desktop/build-resources/tools/README.md
+# says where to download them; the build expects them in that folder.
+desktop/build-resources/tools/*.exe
+
+# --- Not ours to publish ----------------------------------------------------
+# Commercial music used for testing. Never commit this, public or private.
+Test Music Folder/
+
+# --- Local noise ------------------------------------------------------------
+*.log
+Thumbs.db
+.DS_Store

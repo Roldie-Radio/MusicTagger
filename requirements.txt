@@ -1,0 +1,13 @@
+# Core
+mutagen>=1.47.0        # tag read/write for mp3, flac, m4a, ogg, opus, wma, wav
+requests>=2.31.0       # MusicBrainz / AcoustID / Cover Art Archive HTTP
+rapidfuzz>=3.6.0       # fast string similarity for match confidence
+numpy>=1.26.0          # audio quality analysis (FFT, statistics)
+
+# Local web UI
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# Optional: wraps the UI in a native desktop window instead of a browser tab.
+# The app works fine without it (falls back to your default browser).
+pywebview>=5.0 ; python_version >= "3.9"

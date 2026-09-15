@@ -1,0 +1,52 @@
+{
+  "name": "musictagger-desktop",
+  "productName": "MusicTagger",
+  "version": "0.1.0",
+  "description": "Automatic music tagging, Plex organisation and audio quality analysis.",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.musictagger.app",
+    "productName": "MusicTagger",
+    "asar": true,
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/musictagger-backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../build-resources/tools",
+        "to": "tools",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "../build-resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MusicTagger"
+    }
+  }
+}
