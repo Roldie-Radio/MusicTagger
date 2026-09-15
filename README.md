@@ -340,19 +340,33 @@ off: Settings → Audio analysis → Updates → *Check for new versions*. With 
 off, no request is made at all. There is also a *Check now* button there for
 an immediate answer that ignores the cache.
 
-Releases are built and published by
-[`.github/workflows/release.yml`](.github/workflows/release.yml) when a version
-tag is pushed:
+Releases are built by
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which has two
+ways in.
+
+**Push a tag**, if your credentials can write `refs/tags/`:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-The tag has to match `__version__` in `musictag/__init__.py`, and that in turn
-has to match `version` in `desktop/electron/package.json`. The workflow fails
-on the first mismatch and `tests/test_update.py` fails on the second - an
-installer that misreports its own version would tell every user who installs
-it that an update is available forever.
+**Or run the workflow by hand** from the Actions tab, on any branch. No tag is
+needed: the version comes from `musictag/__init__.py`, and publishing the draft
+release the build produces is what creates the tag - GitHub's Releases API
+mints a tag that does not exist yet when a release naming it is published. This
+is the route to use when a token is scoped to `refs/heads/` and is refused on
+`refs/tags/`, which is common for CI and app credentials.
+
+Either way the installer is uploaded to a **draft** release, so it can be
+checked before anything is public. Until that draft is published,
+`/releases/latest` keeps returning 404 and the in-app check keeps correctly
+reporting there is nothing to update to.
+
+Bump `__version__` in `musictag/__init__.py` and `version` in
+`desktop/electron/package.json` together. A tagged build fails if the tag
+disagrees with the first, and `tests/test_update.py` fails if the two files
+disagree with each other - an installer that misreports its own version would
+tell every user who installs it that an update is available forever.
 
 ## Tests
 
