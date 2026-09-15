@@ -34,14 +34,14 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: npm
@@ -69,22 +69,57 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt pyinstaller
 
       # --- bundled tools ---------------------------------------------------
-      # Same downloads desktop/build-resources/tools/README.md documents. They
+      # The downloads desktop/build-resources/tools/README.md documents. They
       # are gitignored (~200MB) so CI fetches them the same way a human would.
+      #
+      # FFMPEG_VERSION pins which ffmpeg gets bundled. The README's
+      # ffmpeg-release-essentials.zip always serves whatever is newest, so two
+      # builds of the same commit could ship different ffmpeg binaries and
+      # nothing would say so. Leave it empty to track latest; set it to a
+      # version (e.g. "8.0") to pin. Either way the version actually bundled
+      # is resolved, asserted and printed below, so the build always states
+      # what went into it.
       - name: Fetch ffmpeg and fpcalc
         shell: pwsh
+        env:
+          FFMPEG_VERSION: ''
         run: |
+          $ErrorActionPreference = 'Stop'
           $tools = "desktop/build-resources/tools"
           New-Item -ItemType Directory -Force -Path $tools | Out-Null
 
-          curl.exe -L --fail -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          $wanted = $env:FFMPEG_VERSION
+          if ($wanted) {
+            $url = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-$wanted-essentials_build.zip"
+          } else {
+            $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          }
+          Write-Host "ffmpeg source: $url"
+          curl.exe -L --fail -o ffmpeg.zip $url
+          if ($LASTEXITCODE -ne 0) { throw "ffmpeg download failed ($url)" }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp -Force
           Copy-Item (Get-ChildItem -Recurse -Filter ffmpeg.exe ffmpeg-tmp)[0].FullName $tools
           Copy-Item (Get-ChildItem -Recurse -Filter ffprobe.exe ffmpeg-tmp)[0].FullName $tools
 
           curl.exe -L --fail -o fpcalc.zip https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip
+          if ($LASTEXITCODE -ne 0) { throw "fpcalc download failed" }
           Expand-Archive fpcalc.zip -DestinationPath fpcalc-tmp -Force
           Copy-Item (Get-ChildItem -Recurse -Filter fpcalc.exe fpcalc-tmp)[0].FullName $tools
+
+          # What actually got bundled, from the binary itself rather than from
+          # the filename - a URL that quietly redirects elsewhere is caught here.
+          $banner = (& "$tools/ffmpeg.exe" -version | Select-Object -First 1)
+          Write-Host "bundled: $banner"
+          # [regex]::Match rather than -notmatch + $Matches: whether the
+          # negated operator leaves $Matches populated is a subtlety, and this
+          # states the intent outright.
+          $m = [regex]::Match($banner, 'ffmpeg version (\S+)')
+          if (-not $m.Success) { throw "could not read a version out of: $banner" }
+          $got = $m.Groups[1].Value
+          if ($wanted -and $got -notlike "$wanted*") {
+            throw "asked for ffmpeg $wanted but bundled $got"
+          }
+          Write-Host "::notice::Bundled ffmpeg $got (set FFMPEG_VERSION to pin this)"
 
           Get-ChildItem $tools
 
@@ -99,6 +134,59 @@ jobs:
 
       - name: Freeze the backend
         run: python -m PyInstaller desktop/backend/backend.spec --distpath desktop/dist --workpath desktop/build --noconfirm
+
+      # --- does the thing we ship actually start? --------------------------
+      # The tests above run against the source. This runs the frozen binary,
+      # which is a different artifact and can fail in ways the source cannot:
+      # a hidden import PyInstaller did not find builds, packages and
+      # publishes perfectly happily, then dies on a user's machine. This is
+      # the check desktop/README.md describes doing by hand.
+      - name: Smoke-test the frozen backend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "desktop/dist/musictagger-backend/musictagger-backend.exe"
+          if (-not (Test-Path $exe)) { throw "frozen backend missing at $exe" }
+
+          # A throwaway home, so a CI run can never read or write real app data.
+          $env:MUSICTAGGER_HOME = Join-Path $env:RUNNER_TEMP "mt-smoke"
+          $out = Join-Path $env:RUNNER_TEMP "backend-out.txt"
+          $err = Join-Path $env:RUNNER_TEMP "backend-err.txt"
+
+          $proc = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+                                -RedirectStandardOutput $out -RedirectStandardError $err
+
+          $port = $null
+          foreach ($i in 1..60) {
+            Start-Sleep -Milliseconds 500
+            if (Test-Path $out) {
+              $m = Select-String -Path $out -Pattern 'MUSICTAGGER_PORT=(\d+)' | Select-Object -First 1
+              if ($m) { $port = $m.Matches[0].Groups[1].Value; break }
+            }
+            if ($proc.HasExited) { break }
+          }
+
+          if (-not $port) {
+            Write-Host "--- stdout ---"; if (Test-Path $out) { Get-Content $out }
+            Write-Host "--- stderr ---"; if (Test-Path $err) { Get-Content $err }
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            throw "Frozen backend never reported a port - it did not start"
+          }
+
+          try {
+            $status = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/status" -TimeoutSec 20
+            $declared = (python -c "import musictag; print(musictag.__version__)").Trim()
+            Write-Host "frozen backend answered on $port, version $($status.version)"
+
+            if (-not $status.version) { throw "/api/status returned no version" }
+            if ($status.version -ne $declared) {
+              throw "frozen backend reports $($status.version) but the source declares $declared"
+            }
+            # Proves the real app config loaded, not just that something served HTTP.
+            if (-not $status.supported_formats) { throw "/api/status listed no supported formats" }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
 
       - name: Build and publish the installer
         working-directory: desktop/electron

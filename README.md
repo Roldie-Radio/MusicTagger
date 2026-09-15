@@ -357,6 +357,12 @@ mints a tag that does not exist yet when a release naming it is published. This
 is the route to use when a token is scoped to `refs/heads/` and is refused on
 `refs/tags/`, which is common for CI and app credentials.
 
+Before packaging, the build runs the frozen backend and checks it answers
+`/api/status` with the expected version. The tests above cover the Python
+source; this covers the artifact that actually ships, which can fail in ways
+the source cannot - a hidden import PyInstaller missed builds and packages
+perfectly happily, then dies on a user's machine.
+
 Either way the installer is uploaded to a **draft** release, so it can be
 checked before anything is public. Until that draft is published,
 `/releases/latest` keeps returning 404 and the in-app check keeps correctly
@@ -380,8 +386,15 @@ every defect the analyser looks for is present in a file where the exact signal
 is known. The suite includes a false-positive baseline: a clean file must come
 back quiet, or the detectors are not worth having.
 
-Building those fixtures needs `ffmpeg` on your `PATH`. Without it they skip
-rather than fail, taking 118 of the 377 tests out of the run - so a green result
-on a machine with no ffmpeg is a weaker signal than it looks.
+The suite also runs in CI on every push and pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), on Linux and Windows
+both - the one test failure this repo has had was a Windows path literal that
+passed on Windows and failed everywhere else, which a single-platform matrix
+would not have caught.
+
+Building the audio fixtures needs `ffmpeg` on your `PATH`. Without it they skip
+rather than fail, taking 118 tests out of the run - so a green result on a
+machine with no ffmpeg is a weaker signal than it looks. CI fails outright if
+ffmpeg is missing rather than passing weakly.
 [`desktop/build-resources/tools/README.md`](desktop/build-resources/tools/README.md)
 has the download links.
