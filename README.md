@@ -328,6 +328,32 @@ musictag/
   cli.py           command line
 ```
 
+## Updates
+
+The app asks GitHub at most once every six hours whether a newer release
+exists, and shows a banner if one does. **Nothing is downloaded or installed
+automatically** - the banner links to the release and you decide.
+
+This is the only request MusicTagger makes on its own initiative rather than
+because you asked it to look something up, so it is a single switch to turn
+off: Settings → Audio analysis → Updates → *Check for new versions*. With it
+off, no request is made at all. There is also a *Check now* button there for
+an immediate answer that ignores the cache.
+
+Releases are built and published by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) when a version
+tag is pushed:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The tag has to match `__version__` in `musictag/__init__.py`, and that in turn
+has to match `version` in `desktop/electron/package.json`. The workflow fails
+on the first mismatch and `tests/test_update.py` fails on the second - an
+installer that misreports its own version would tell every user who installs
+it that an update is available forever.
+
 ## Tests
 
 ```bash

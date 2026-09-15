@@ -17,6 +17,13 @@
     "appId": "com.musictagger.app",
     "productName": "MusicTagger",
     "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Roldie-Radio",
+        "repo": "MusicTagger"
+      }
+    ],
     "directories": {
       "output": "../release"
     },

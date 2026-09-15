@@ -66,6 +66,7 @@ const state = {
   valuesMode: loadStored('musictagger-values', 'proposed'),
   config: null,
   status: null,
+  update: null,
   pollTimer: null,
   activeJobId: null,
   picker: { path: '', chosen: '', target: 'library' },
@@ -192,6 +193,61 @@ function renderCapabilityNotice() {
   link.addEventListener('click', () => openSettings());
   box.appendChild(link);
   box.hidden = false;
+}
+
+function renderUpdateNotice() {
+  const box = $('#updateNotice');
+  const info = state.update;
+  // Only ever speak up for an update that actually exists. Being up to date,
+  // an unreachable GitHub and a switched-off check are all silence: a banner
+  // that appears when there is nothing to do is a banner people learn to
+  // ignore, including on the release where it matters.
+  if (!info || !info.available || !info.latest) { box.hidden = true; return; }
+  if (loadStored('musictagger-dismissed-update', '') === info.latest) { box.hidden = true; return; }
+
+  box.innerHTML = '';
+  box.appendChild(document.createTextNode(
+    `MusicTagger ${info.latest} is available. You have ${info.current}. `));
+
+  const link = el('a', '', 'View the release');
+  link.href = info.url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  // The release notes are the one bit of context worth having without leaving
+  // the app, but they are arbitrary markdown - a hover preview, not layout.
+  if (info.notes) link.title = info.notes.slice(0, 400);
+  box.appendChild(link);
+
+  box.appendChild(document.createTextNode(' · '));
+  const dismiss = el('button', 'link', 'Dismiss');
+  dismiss.addEventListener('click', () => {
+    // Per version, so dismissing this one does not also hide the next one.
+    store('musictagger-dismissed-update', info.latest);
+    box.hidden = true;
+  });
+  box.appendChild(dismiss);
+  box.hidden = false;
+}
+
+async function checkForUpdate({ force = false } = {}) {
+  try {
+    state.update = await api(`/api/update${force ? '?force=true' : ''}`);
+  } catch (_) {
+    // A check that cannot run is not worth a toast - the app is entirely
+    // usable without it, and the user did not ask for this request.
+    state.update = null;
+  }
+  renderUpdateNotice();
+  return state.update;
+}
+
+function updateStatusText(info) {
+  if (!info) return 'Could not reach GitHub just now.';
+  if (!info.enabled) return 'Update checking is switched off.';
+  if (info.error) return 'Could not reach GitHub just now.';
+  if (!info.latest) return 'No releases have been published yet.';
+  if (info.available) return `${info.latest} is available - you have ${info.current}.`;
+  return `Up to date (${info.current}).`;
 }
 
 function ring(value) {
@@ -1410,7 +1466,7 @@ const CONFIG_FIELDS = [
   'write_cover_art', 'write_cover_file', 'write_musicbrainz_ids', 'id3v2_version',
   'various_artists_name', 'organize_enabled', 'organize_mode', 'organize_root',
   'folder_template', 'file_template', 'ffmpeg_path', 'quality_workers',
-  'quality_max_seconds',
+  'quality_max_seconds', 'update_check_enabled',
 ];
 
 async function openSettings() {
@@ -1762,6 +1818,11 @@ function wire() {
   // settings
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnSaveSettings').addEventListener('click', saveSettings);
+  $('#btnCheckUpdate').addEventListener('click', async () => {
+    $('#updateStatusHint').textContent = 'Checking\u2026';
+    const info = await checkForUpdate({ force: true });
+    $('#updateStatusHint').textContent = updateStatusText(info);
+  });
   $('#settingsTabs').addEventListener('click', (e) => {
     const tab = e.target.closest('.tab');
     if (!tab) return;
@@ -1814,4 +1875,8 @@ function wire() {
   // If a job was already running when the page loaded, latch onto it.
   const active = state.status?.active_jobs || [];
   if (active.length) { showJob(active[0]); pollJob(active[0].id); }
+
+  // Deliberately last and deliberately not awaited: this one can go out to
+  // the network, and nothing on the page should wait on it to become usable.
+  checkForUpdate();
 })();

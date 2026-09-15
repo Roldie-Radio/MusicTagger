@@ -326,6 +326,14 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
   padding: 0;
 }
 
+/* A new version is good news, not a warning - the default notice colour is
+   the same amber used for "something is degraded", which would read as a
+   problem to fix rather than something available to take. */
+.notice-update {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 /* ========================================================================
    Toolbar
    ======================================================================== */
