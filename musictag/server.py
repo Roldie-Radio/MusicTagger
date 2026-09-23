@@ -26,7 +26,7 @@ from .cache import http_cache
 from .config import APP_DIR, get_config, set_config
 from .export_plex import commit_export, plan_export
 from .fingerprint import FPCALC_HOMEPAGE, fpcalc_download_url, install_fpcalc
-from .jobs import EDIT_BLOCKING_JOBS, Job, JobConflict, get_jobs
+from .jobs import EDIT_BLOCKING_JOBS, LIBRARY_JOBS, Job, JobConflict, get_jobs
 from .journal import get_journal
 from .library import scan as scan_library
 from .matching import Matcher
@@ -445,6 +445,7 @@ def api_apply(req: ApplyRequest) -> dict[str, Any]:
         report = applier.apply(
             tracks, options,
             progress=lambda done, total, path: job.progress(done, total, Path(path).name),
+            cancelled=lambda: job.cancelled,
         )
         for track in tracks:
             old = originals[id(track)]
@@ -677,6 +678,8 @@ def api_history_detail(batch_id: str) -> dict[str, Any]:
 def api_undo(req: UndoRequest) -> dict[str, Any]:
     cfg = get_config()
     journal = get_journal()
+    if journal.is_undone(req.batch_id):
+        raise HTTPException(409, "This change has already been undone.")
 
     def run(job: Job):
         job.log(f"Undoing batch {req.batch_id}")
@@ -691,6 +694,11 @@ def api_undo(req: UndoRequest) -> dict[str, Any]:
 
 @app.post("/api/clear")
 def api_clear() -> dict[str, Any]:
+    # A job still working on these tracks would write them straight back,
+    # so the list would look cleared and then reappear.
+    busy = get_jobs().running_any(LIBRARY_JOBS)
+    if busy:
+        raise HTTPException(409, str(JobConflict(busy)))
     get_state().clear()
     return {"ok": True}
 

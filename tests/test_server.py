@@ -896,3 +896,27 @@ class TestJobConflicts:
             time.sleep(0.01)
         response = client.post("/api/apply", json={"paths": [], "dry_run": True})
         assert response.status_code == 200
+
+
+class TestClearAndUndoGuards:
+    def test_clear_is_refused_while_a_job_is_working_on_the_tracks(self, client):
+        release = threading.Event()
+        jobs = server.get_jobs()
+        jobs.submit("identify", lambda job: release.wait(5))
+        try:
+            response = client.post("/api/clear")
+            assert response.status_code == 409
+        finally:
+            release.set()
+
+    def test_a_batch_cannot_be_undone_twice(self, client, tmp_path, monkeypatch):
+        from musictag.journal import Journal
+        journal = Journal(tmp_path / "journal.db")
+        monkeypatch.setattr(server, "get_journal", lambda: journal)
+        batch = journal.start_batch("test")
+        journal.finish_batch(batch, {})
+
+        job = client.post("/api/undo", json={"batch_id": batch}).json()
+        assert wait_for_job(client, job["id"])["status"] == "done"
+        again = client.post("/api/undo", json={"batch_id": batch})
+        assert again.status_code == 409

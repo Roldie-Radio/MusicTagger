@@ -12,7 +12,7 @@ const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { startAutoUpdate } = require('./updater');
+const { registerUpdateIpc, startAutoUpdate } = require('./updater');
 
 // A second launch should focus the existing window, not start a second
 // backend fighting over the same sqlite state on a different port.
@@ -168,6 +168,8 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Exposes the update controls to the page, and nothing else.
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
@@ -214,6 +216,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(() => {
   app.setAppUserModelId('com.musictagger.app');
+  registerUpdateIpc();
   createWindow();
 
   app.on('activate', () => {

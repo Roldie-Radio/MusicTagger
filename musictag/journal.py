@@ -21,6 +21,7 @@ from typing import Any, Optional
 from .config import JOURNAL_DB
 from .models import TrackTags
 from .tags import write_file
+from .util import unique_path
 
 #: Key inside a "tags" entry's ``prev_tags`` JSON listing the fields Apply set.
 WRITTEN_KEY = "_written"
@@ -62,6 +63,11 @@ class Journal:
             " error TEXT)"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_batch ON entries(batch_id)")
+        # Added after the first release; older journals get the column here.
+        try:
+            conn.execute("ALTER TABLE batches ADD COLUMN undone REAL")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
     def _conn(self) -> sqlite3.Connection:
@@ -162,10 +168,28 @@ class Journal:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
+    def is_undone(self, batch_id: str) -> bool:
+        row = self._conn().execute(
+            "SELECT undone FROM batches WHERE id = ?", (batch_id,)).fetchone()
+        return bool(row and row["undone"])
+
     def undo(self, batch_id: str, *, id3v2_version: int = 4) -> UndoResult:
-        """Reverse a batch: files move back first, then tags are restored."""
+        """Reverse a batch: files move back first, then tags are restored.
+
+        A batch is undone once. Replaying it a second time would move files
+        that have since been put back - and after an export that replaced a
+        duplicate, that means moving the old Plex copy over the incoming file.
+        """
         result = UndoResult()
+        if self.is_undone(batch_id):
+            result.skipped += 1
+            result.messages.append("This change has already been undone.")
+            return result
         entries = [e for e in self.batch_entries(batch_id) if e["ok"]]
+        #: Files restored under a different name than they left from, so a
+        #: tag restore later in the replay lands on the file, not on whatever
+        #: now occupies its old path.
+        redirected: dict[str, Path] = {}
 
         # Reverse order so a move followed by a tag write unwinds cleanly.
         for entry in reversed(entries):
@@ -178,14 +202,23 @@ class Journal:
                         result.messages.append(f"Already gone, not restored: {dest}")
                         continue
                     src_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(dest_path), str(src_path))
+                    # Something new may have been put at the original path
+                    # since. Moving onto it would overwrite it, so the file
+                    # comes back under a free name next to it instead.
+                    target = unique_path(src_path)
+                    if target != src_path:
+                        result.messages.append(
+                            f"{src_path} is taken now, restored as {target.name}")
+                    shutil.move(str(dest_path), str(target))
+                    if target != src_path:
+                        redirected[src] = target
                     result.restored += 1
                 elif op == "copy" and dest:
                     # Deliberately not deleted - see module docstring.
                     result.skipped += 1
                     result.messages.append(f"Copy left in place (delete manually if unwanted): {dest}")
                 elif op == "tags" and entry["prev_tags"]:
-                    target = Path(src)
+                    target = redirected.get(src, Path(src))
                     if not target.exists():
                         # It may have been moved in the same batch and just restored.
                         result.skipped += 1
@@ -204,6 +237,10 @@ class Journal:
             except Exception as exc:  # noqa: BLE001
                 result.failed += 1
                 result.messages.append(f"{op} undo failed for {src}: {exc}")
+
+        conn = self._conn()
+        conn.execute("UPDATE batches SET undone = ? WHERE id = ?", (time.time(), batch_id))
+        conn.commit()
         return result
 
     def prune(self, keep: int = 100) -> int:

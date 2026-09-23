@@ -363,11 +363,18 @@ exists.
 - **Running from source:** nothing is installed; a banner links to the
   release.
 
+The version you are running is shown next to the app name and in Settings →
+Quality → Updates.
+
 This is the only request MusicTagger makes on its own initiative rather than
 because you asked it to look something up, so it is a single switch to turn
-off: Settings → Audio analysis → Updates → *Check for new versions*. With it
-off, no request is made at all, for the banner or the download. There is also
-a *Check now* button there for an immediate answer that ignores the cache.
+off: Settings → Quality → Updates → *Check for new versions*. With it off, no
+automatic request is made at all, for the banner or the download.
+
+To update straight away, click **Update now** in the same place (installed app
+only). It checks, downloads with a progress bar, then turns into **Restart and
+install**, and works even with automatic checks switched off, since you asked.
+Running from source there is a *Check now* button instead, which only reports.
 
 Installed copies only update to **published** releases - never drafts or
 prereleases.

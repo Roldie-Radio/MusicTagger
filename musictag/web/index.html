@@ -19,7 +19,7 @@
       <circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
     </svg>
     <div>
-      <h1>MusicTagger</h1>
+      <h1>MusicTagger <span class="app-version" id="appVersion"></span></h1>
       <p class="brand-sub" id="libraryLabel">No library selected</p>
     </div>
   </div>
@@ -440,13 +440,16 @@
 
         <div class="field-group">
           <h3>Updates</h3>
+          <p class="current-version">You are running MusicTagger
+            <strong id="currentVersion">…</strong>.</p>
           <p class="help">
             Asks GitHub once every few hours whether a newer MusicTagger has been
             released. In the installed app a new version downloads in the
             background and installs when you restart; you choose when. Running
             from source, a banner links to the release instead. This is the only
             request the app makes on its own initiative rather than because you
-            asked it to look something up, and switching it off stops it entirely.
+            asked it to look something up. Switching it off stops the automatic
+            checks entirely; <em>Update now</em> still works whenever you click it.
           </p>
           <label class="check">
             <input type="checkbox" id="cfg_update_check_enabled">
@@ -454,6 +457,7 @@
           </label>
           <div class="field-row">
             <button class="btn btn-ghost btn-sm" id="btnCheckUpdate">Check now</button>
+            <button class="btn btn-primary btn-sm" id="btnUpdateNow" hidden>Update now</button>
             <span class="help" id="updateStatusHint"></span>
           </div>
         </div>

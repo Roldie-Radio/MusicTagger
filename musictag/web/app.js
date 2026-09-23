@@ -67,7 +67,12 @@ const state = {
   config: null,
   status: null,
   update: null,
-  pollTimer: null,
+  //: The desktop shell's updater state, when running inside it.
+  desktopUpdate: null,
+  //: jobId -> poll timer. One per job: Identify and Quality may run side by
+  //: side, and a single shared timer stopped following the first when the
+  //: second started - its result was never shown and Cancel lost track of it.
+  polls: new Map(),
   activeJobId: null,
   picker: { path: '', chosen: '', target: 'library' },
   exportPlan: null,
@@ -198,6 +203,25 @@ function renderCapabilityNotice() {
 function renderUpdateNotice() {
   const box = $('#updateNotice');
   const info = state.update;
+  const desk = state.desktopUpdate;
+  // In the desktop app the shell knows more than the backend check: whether
+  // the new version is downloading, or already downloaded and waiting.
+  if (desk && desk.status === 'ready') {
+    box.innerHTML = '';
+    box.appendChild(document.createTextNode(
+      `MusicTagger ${desk.available} is ready to install. `));
+    const restart = el('button', 'link', 'Restart now');
+    restart.addEventListener('click', installDesktopUpdate);
+    box.appendChild(restart);
+    box.hidden = false;
+    return;
+  }
+  if (desk && desk.status === 'downloading') {
+    box.innerHTML = '';
+    box.textContent = `Downloading MusicTagger ${desk.available || 'update'}\u2026 ${desk.percent || 0}%`;
+    box.hidden = false;
+    return;
+  }
   // Only ever speak up for an update that actually exists. Being up to date,
   // an unreachable GitHub and a switched-off check are all silence: a banner
   // that appears when there is nothing to do is a banner people learn to
@@ -257,6 +281,57 @@ function updateStatusText(info) {
       : `${info.latest} is available - you have ${info.current}.`;
   }
   return `Up to date (${info.current}).`;
+}
+
+/* ----------------------------------------------------- desktop updates */
+
+function desktopUpdates() {
+  return window.musictaggerDesktop?.updates || null;
+}
+
+function renderDesktopUpdate() {
+  const desk = state.desktopUpdate;
+  const usable = desk && desk.status !== 'unsupported';
+  // Inside the installed app "Update now" replaces the plain "Check now",
+  // because the shell can actually fetch and install what it finds.
+  $('#btnUpdateNow').hidden = !usable;
+  $('#btnCheckUpdate').hidden = !!usable;
+  if (usable) {
+    const btn = $('#btnUpdateNow');
+    const hint = $('#updateStatusHint');
+    btn.disabled = desk.status === 'checking' || desk.status === 'downloading';
+    btn.textContent = {
+      checking: 'Checking\u2026',
+      downloading: `Downloading ${desk.percent || 0}%`,
+      ready: 'Restart and install',
+    }[desk.status] || 'Update now';
+    hint.textContent = {
+      'up-to-date': `Up to date (${desk.current}).`,
+      downloading: `Downloading MusicTagger ${desk.available || ''}\u2026`,
+      ready: `MusicTagger ${desk.available} is downloaded and ready.`,
+      error: `Could not update: ${desk.error || 'unknown error'}`,
+    }[desk.status] || '';
+  }
+  renderUpdateNotice();
+}
+
+async function installDesktopUpdate() {
+  const updates = desktopUpdates();
+  if (!updates) return;
+  const result = await updates.install();
+  if (result && !result.ok) toast(result.error || 'Could not install the update.', 'error');
+}
+
+async function initDesktopUpdates() {
+  const updates = desktopUpdates();
+  if (!updates) return;
+  updates.onState((desk) => { state.desktopUpdate = desk; renderDesktopUpdate(); });
+  try {
+    state.desktopUpdate = await updates.getState();
+  } catch (_) {
+    state.desktopUpdate = null;
+  }
+  renderDesktopUpdate();
 }
 
 function ring(value) {
@@ -550,6 +625,13 @@ function editCell(cell, track, col) {
     finished = true;
     const raw = input.value.trim();
     if (String(raw) === String(startValue ?? '')) { renderTracks(); return; }
+    // Number("3/12") is NaN, which JSON sends as null - silently clearing
+    // the field instead of saving what was typed.
+    if (col.numeric && raw !== '' && !Number.isFinite(Number(raw))) {
+      toast(`"${raw}" is not a number.`, 'error');
+      renderTracks();
+      return;
+    }
     const value = raw === '' ? null : (col.numeric ? Number(raw) : raw);
     try {
       await api('/api/track/edit', {
@@ -1074,7 +1156,12 @@ function openEditor(track, container) {
     for (const [key, input] of Object.entries(inputs)) {
       const raw = input.value.trim();
       if (raw === '') { tags[key] = null; continue; }
-      tags[key] = (key === 'track_no' || key === 'disc_no') ? Number(raw) : raw;
+      const numeric = key === 'track_no' || key === 'disc_no';
+      if (numeric && !Number.isFinite(Number(raw))) {
+        toast(`${key === 'track_no' ? 'Track' : 'Disc'} number must be a number.`, 'error');
+        return;
+      }
+      tags[key] = numeric ? Number(raw) : raw;
     }
     try {
       await api('/api/track/edit', { method: 'POST', body: { path: track.path, tags } });
@@ -1126,25 +1213,34 @@ function showJob(job) {
   $('#jobCount').textContent = job.total ? `${job.done} / ${job.total}` : '';
 }
 
+function stopPolling(jobId) {
+  clearInterval(state.polls.get(jobId));
+  state.polls.delete(jobId);
+  if (state.activeJobId === jobId) {
+    // Hand the progress bar to whichever job is still running, if any.
+    state.activeJobId = [...state.polls.keys()].pop() || null;
+    if (!state.activeJobId) showJob(null);
+  }
+}
+
 function pollJob(jobId, onDone) {
+  if (state.polls.has(jobId)) return;
   state.activeJobId = jobId;
-  clearInterval(state.pollTimer);
-  state.pollTimer = setInterval(async () => {
+  state.polls.set(jobId, setInterval(async () => {
     let job;
     try { job = await api(`/api/jobs/${jobId}`); }
-    catch (err) { clearInterval(state.pollTimer); toast(err.message, 'error'); return; }
+    catch (err) { stopPolling(jobId); toast(err.message, 'error'); return; }
 
-    showJob(job);
+    if (state.activeJobId === jobId) showJob(job);
     if (['done', 'error', 'cancelled'].includes(job.status)) {
-      clearInterval(state.pollTimer);
-      state.activeJobId = null;
+      stopPolling(jobId);
       if (job.status === 'error') toast(job.error || 'Job failed', 'error');
       else if (job.status === 'cancelled') toast('Cancelled');
       else if (job.message) toast(job.message, 'success');
       if (onDone) onDone(job);
       await refreshAll();
     }
-  }, 700);
+  }, 700));
 }
 
 async function startJob(endpoint, body, onDone) {
@@ -1160,6 +1256,8 @@ async function startJob(endpoint, body, onDone) {
 async function refreshStatus() {
   try {
     state.status = await api('/api/status');
+    $('#appVersion').textContent = `v${state.status.version}`;
+    $('#currentVersion').textContent = state.status.version;
     renderStats();
     renderCapabilityNotice();
     $('#btnIdentify').disabled = state.status.stats.total === 0;
@@ -1562,12 +1660,17 @@ async function loadHistory() {
         `${new Date(batch.started * 1000).toLocaleString()} · ${parts.join(', ') || batch.entry_count + ' entries'}`));
       item.appendChild(body);
 
-      const undo = el('button', 'btn btn-sm', 'Undo');
-      undo.addEventListener('click', async () => {
-        if (!confirm('Restore the previous tags and move any files back?')) return;
-        await startJob('/api/undo', { batch_id: batch.id }, () => loadHistory());
-      });
-      item.appendChild(undo);
+      if (batch.undone) {
+        // Undoing twice would move back files that were already put back.
+        item.appendChild(el('span', 'history-undone', 'Undone'));
+      } else {
+        const undo = el('button', 'btn btn-sm', 'Undo');
+        undo.addEventListener('click', async () => {
+          if (!confirm('Restore the previous tags and move any files back?')) return;
+          await startJob('/api/undo', { batch_id: batch.id }, () => loadHistory());
+        });
+        item.appendChild(undo);
+      }
       list.appendChild(item);
     }
   } catch (err) { toast(err.message, 'error'); }
@@ -1827,6 +1930,13 @@ function wire() {
   // settings
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnSaveSettings').addEventListener('click', saveSettings);
+  $('#btnUpdateNow').addEventListener('click', async () => {
+    const updates = desktopUpdates();
+    if (!updates) return;
+    if (state.desktopUpdate?.status === 'ready') { await installDesktopUpdate(); return; }
+    state.desktopUpdate = await updates.check();
+    renderDesktopUpdate();
+  });
   $('#btnCheckUpdate').addEventListener('click', async () => {
     $('#updateStatusHint').textContent = 'Checking\u2026';
     const info = await checkForUpdate({ force: true });
@@ -1883,7 +1993,10 @@ function wire() {
 
   // If a job was already running when the page loaded, latch onto it.
   const active = state.status?.active_jobs || [];
-  if (active.length) { showJob(active[0]); pollJob(active[0].id); }
+  for (const job of active) pollJob(job.id);
+  if (active.length) showJob(active[active.length - 1]);
+
+  initDesktopUpdates();
 
   // Deliberately last and deliberately not awaited: this one can go out to
   // the network, and nothing on the page should wait on it to become usable.

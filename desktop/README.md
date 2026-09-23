@@ -119,6 +119,12 @@ now* or *Later* - later means it installs silently the next time the app is
 closed. Before the installer runs, the backend is stopped synchronously so
 none of its files are locked.
 
+Settings → Quality → Updates has an **Update now** button that checks and
+downloads on demand, then offers **Restart and install**. The page reaches the
+updater through `preload.js`, which exposes only those update calls; the
+window stays sandboxed, and `updater.js` ignores requests from any page that
+is not the app's own `http://127.0.0.1` one.
+
 The shell passes `MUSICTAGGER_AUTO_UPDATE=1` to the backend, so the in-app
 banner says an update is on its way instead of linking to a download.
 `npm start` does not auto-update; there is no installer to replace.
