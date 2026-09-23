@@ -18,7 +18,7 @@ from .journal import get_journal
 from .models import Track, TrackTags
 from .organize import companion_files, plan_path
 from .providers.coverart import CoverArtClient
-from .tags import read_embedded_art, write_file
+from .tags import SUPPORTED_EXTENSIONS, read_embedded_art, write_file
 from .util import unique_path
 
 log = logging.getLogger(__name__)
@@ -47,6 +47,10 @@ class ApplyReport:
     dry_run: bool = False
     planned: list[dict[str, str]] = field(default_factory=list)
     errors: list[dict[str, str]] = field(default_factory=list)
+    #: (source folder, destination folder) of every file that actually
+    #: arrived - not serialised. ``planned`` also lists moves that failed,
+    #: and companion files must only follow tracks that really left.
+    placed: list[tuple[Path, Path]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -91,7 +95,13 @@ class Applier:
 
     # ------------------------------------------------------------------
     def apply(self, tracks: Iterable[Track], options: ApplyOptions,
-              progress: Optional[Callable[[int, int, str], None]] = None) -> ApplyReport:
+              progress: Optional[Callable[[int, int, str], None]] = None,
+              cancelled: Optional[Callable[[], bool]] = None) -> ApplyReport:
+        """Apply every track, or stop between tracks once ``cancelled`` says so.
+
+        A cancelled run never stops partway through a file: each one is either
+        fully written (and journalled) or untouched.
+        """
         tracks = list(tracks)
         report = ApplyReport(dry_run=options.dry_run)
         journal = get_journal()
@@ -102,6 +112,8 @@ class Applier:
             )
 
         for index, track in enumerate(tracks):
+            if cancelled and cancelled():
+                break
             try:
                 self._apply_one(track, options, report, journal)
             except Exception as exc:  # noqa: BLE001 - one bad file must not abort the run
@@ -114,8 +126,10 @@ class Applier:
                 progress(index + 1, len(tracks), track.path)
 
         if not options.dry_run:
+            # Before finishing the batch, so companion moves are journalled
+            # with it and undo puts them back too.
+            self._move_companions(report, options, journal)
             journal.finish_batch(report.batch_id, report.to_dict())
-            self._move_companions(tracks, report, options)
         return report
 
     # ------------------------------------------------------------------
@@ -180,10 +194,12 @@ class Applier:
                 with journal.step(report.batch_id, "copy", str(source), dest=str(dest)):
                     shutil.copy2(source, dest)
                 report.copied += 1
+                report.placed.append((source.parent, dest.parent))
             else:
                 with journal.step(report.batch_id, "move", str(source), dest=str(dest)):
                     shutil.move(str(source), str(dest))
                 report.moved += 1
+                report.placed.append((source.parent, dest.parent))
                 track.path = str(dest)
                 track.filename = dest.name
 
@@ -231,26 +247,44 @@ class Applier:
         except OSError as exc:
             log.debug("Could not write %s: %s", target, exc)
 
-    def _move_companions(self, tracks: list[Track], report: ApplyReport,
-                         options: ApplyOptions) -> None:
-        """Carry artwork/cue/log files across when an album folder is reorganised."""
+    def _move_companions(self, report: ApplyReport, options: ApplyOptions,
+                         journal) -> None:
+        """Carry artwork/cue/log files across when an album folder is reorganised.
+
+        Moving them is only right once the album has actually left: if some of
+        its tracks are still in the old folder (only part of it was selected,
+        or some failed), the cover and cue sheet stay with them and are copied
+        instead. Every move is journalled so undo brings it back.
+        """
         if not (options.organize and self.cfg.organize_enabled and self.cfg.keep_extra_files):
             return
         moves: dict[Path, Path] = {}
-        for entry in report.planned:
-            moves.setdefault(Path(entry["from"]).parent, Path(entry["to"]).parent)
+        for src_dir, dest_dir in report.placed:
+            moves.setdefault(src_dir, dest_dir)
 
         for src_dir, dest_dir in moves.items():
             if src_dir == dest_dir or not src_dir.exists() or not dest_dir.exists():
                 continue
+            copy = self.cfg.organize_mode == "copy" or _has_audio(src_dir)
             for companion in companion_files(src_dir):
                 target = dest_dir / companion.name
                 if target.exists():
                     continue
                 try:
-                    if self.cfg.organize_mode == "copy":
+                    if copy:
                         shutil.copy2(companion, target)
+                        journal.record(report.batch_id, "copy", str(companion), dest=str(target))
                     else:
-                        shutil.move(str(companion), str(target))
+                        with journal.step(report.batch_id, "move", str(companion), dest=str(target)):
+                            shutil.move(str(companion), str(target))
                 except OSError as exc:
                     log.debug("Companion file %s: %s", companion, exc)
+
+
+def _has_audio(folder: Path) -> bool:
+    """Whether any audio file is still directly inside ``folder``."""
+    try:
+        return any(p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+                   for p in folder.iterdir())
+    except OSError:
+        return True

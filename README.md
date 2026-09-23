@@ -43,7 +43,15 @@ browser. Either way the server is local only, bound to `127.0.0.1`.
 | **fpcalc** (Chromaprint) | optional | generates the fingerprints the key looks up |
 
 ffmpeg: <https://ffmpeg.org/download.html> — or `winget install Gyan.FFmpeg`.
-AcoustID key: free, ~2 minutes, at <https://acoustid.org/new-application>.
+AcoustID key: the installed app has one built in, so fingerprinting works with
+nothing to set up. Running from source, get a free one in ~2 minutes at
+<https://acoustid.org/new-application> and paste it into Settings, or set
+`MUSICTAGGER_ACOUSTID_KEY`. A key in Settings always takes precedence.
+
+Maintainers: the release build takes the built-in key from the
+`ACOUSTID_API_KEY` repository secret and writes it to the gitignored
+`musictag/_app_key.py`. It is never committed, and a release build fails
+without it rather than shipping an app that cannot fingerprint.
 `fpcalc`: Settings → Identification has a **Download fpcalc** button that shows
 you the exact URL before fetching anything, or install Chromaprint yourself.
 
@@ -249,6 +257,25 @@ recordings, loud ones, and every spectral tilt in between.
 
 ---
 
+## Converting
+
+Select tracks, pick a format in the selection bar and click **Convert**:
+
+| Format | Encoding |
+|---|---|
+| MP3 320 kbps | LAME, constant 320 kbps |
+| M4A | AAC, 256 kbps |
+| WMA | WMA v2, 192 kbps |
+
+Each converted copy is saved **next to its original** with the same tags and
+cover art (WMA gets tags only), and appears in the list straight away.
+Originals are never changed or deleted, an existing file is never
+overwritten (the copy is named `track (2).mp3` instead), and files already in
+the chosen format are skipped. Converting one lossy format to another loses a
+little quality, and no conversion adds quality that was not in the source.
+Conversions show up in History; undo leaves the converted files in place for
+you to delete if you want.
+
 ## Safety
 
 - **Nothing is written until you click Apply.** Scan and identify are read-only.
@@ -335,6 +362,7 @@ musictag/
   config.py        settings, tool discovery
   library.py       filesystem scanning
   tags.py          per-format read/write (the Plex compatibility layer)
+  convert.py       MP3 320 / M4A / WMA conversion via ffmpeg
   fingerprint.py   Chromaprint + AcoustID
   providers/       MusicBrainz, Cover Art Archive, shared HTTP with rate limiting
   matching.py      candidate generation, scoring, confidence
@@ -363,11 +391,18 @@ exists.
 - **Running from source:** nothing is installed; a banner links to the
   release.
 
+The version you are running is shown next to the app name and in Settings →
+Quality → Updates.
+
 This is the only request MusicTagger makes on its own initiative rather than
 because you asked it to look something up, so it is a single switch to turn
-off: Settings → Audio analysis → Updates → *Check for new versions*. With it
-off, no request is made at all, for the banner or the download. There is also
-a *Check now* button there for an immediate answer that ignores the cache.
+off: Settings → Quality → Updates → *Check for new versions*. With it off, no
+automatic request is made at all, for the banner or the download.
+
+To update straight away, click **Update now** in the same place (installed app
+only). It checks, downloads with a progress bar, then turns into **Restart and
+install**, and works even with automatic checks switched off, since you asked.
+Running from source there is a *Check now* button instead, which only reports.
 
 Installed copies only update to **published** releases - never drafts or
 prereleases.

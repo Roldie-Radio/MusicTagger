@@ -24,6 +24,11 @@ desktop/build-resources/tools/*.exe
 # Commercial music used for testing. Never commit this, public or private.
 Test Music Folder/
 
+# --- Secrets written at build time ------------------------------------------
+# The release workflow writes the AcoustID application key here from a
+# repository secret. The repository is public; the key must never be committed.
+musictag/_app_key.py
+
 # --- Local noise ------------------------------------------------------------
 *.log
 Thumbs.db

@@ -19,7 +19,7 @@
       <circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
     </svg>
     <div>
-      <h1>MusicTagger</h1>
+      <h1>MusicTagger <span class="app-version" id="appVersion"></span></h1>
       <p class="brand-sub" id="libraryLabel">No library selected</p>
     </div>
   </div>
@@ -132,6 +132,16 @@
   </label>
   <button class="btn btn-ghost" id="btnPreview">Preview changes</button>
   <button class="btn btn-primary" id="btnApply">Apply to files</button>
+  <span class="action-divider" aria-hidden="true"></span>
+  <label class="convert-pick">
+    <span class="sr-only">Convert to</span>
+    <select id="convertFormat" title="Format to convert the selected tracks to">
+      <option value="mp3">MP3 320 kbps</option>
+      <option value="m4a">M4A (AAC 256 kbps)</option>
+      <option value="wma">WMA (192 kbps)</option>
+    </select>
+  </label>
+  <button class="btn" id="btnConvert" title="Make a copy of each selected track in this format">Convert</button>
 </div>
 
 <!-- ======================== Folder picker ========================= -->
@@ -279,13 +289,15 @@
           <p class="help">
             Fingerprinting identifies a track from the audio itself, so it works even
             when the file has no tags and a meaningless name. It needs a free AcoustID
-            key and the <code>fpcalc</code> tool. Without them the app falls back to
-            matching on existing tags and filenames.
+            key and the <code>fpcalc</code> tool, both of which the installed app
+            includes. Without them the app falls back to matching on existing tags
+            and filenames.
           </p>
           <label class="field">
             <span>AcoustID API key</span>
             <input type="text" id="cfg_acoustid_api_key" placeholder="Get one free at acoustid.org/new-application">
           </label>
+          <p class="help" id="acoustidHint"></p>
           <div class="field-row">
             <label class="field grow">
               <span>fpcalc path</span>
@@ -440,13 +452,16 @@
 
         <div class="field-group">
           <h3>Updates</h3>
+          <p class="current-version">You are running MusicTagger
+            <strong id="currentVersion">…</strong>.</p>
           <p class="help">
             Asks GitHub once every few hours whether a newer MusicTagger has been
             released. In the installed app a new version downloads in the
             background and installs when you restart; you choose when. Running
             from source, a banner links to the release instead. This is the only
             request the app makes on its own initiative rather than because you
-            asked it to look something up, and switching it off stops it entirely.
+            asked it to look something up. Switching it off stops the automatic
+            checks entirely; <em>Update now</em> still works whenever you click it.
           </p>
           <label class="check">
             <input type="checkbox" id="cfg_update_check_enabled">
@@ -454,6 +469,7 @@
           </label>
           <div class="field-row">
             <button class="btn btn-ghost btn-sm" id="btnCheckUpdate">Check now</button>
+            <button class="btn btn-primary btn-sm" id="btnUpdateNow" hidden>Update now</button>
             <span class="help" id="updateStatusHint"></span>
           </div>
         </div>

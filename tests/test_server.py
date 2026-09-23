@@ -896,3 +896,92 @@ class TestJobConflicts:
             time.sleep(0.01)
         response = client.post("/api/apply", json={"paths": [], "dry_run": True})
         assert response.status_code == 200
+
+
+class TestClearAndUndoGuards:
+    def test_clear_is_refused_while_a_job_is_working_on_the_tracks(self, client):
+        release = threading.Event()
+        jobs = server.get_jobs()
+        jobs.submit("identify", lambda job: release.wait(5))
+        try:
+            response = client.post("/api/clear")
+            assert response.status_code == 409
+        finally:
+            release.set()
+
+    def test_a_batch_cannot_be_undone_twice(self, client, tmp_path, monkeypatch):
+        from musictag.journal import Journal
+        journal = Journal(tmp_path / "journal.db")
+        monkeypatch.setattr(server, "get_journal", lambda: journal)
+        batch = journal.start_batch("test")
+        journal.finish_batch(batch, {})
+
+        job = client.post("/api/undo", json={"batch_id": batch}).json()
+        assert wait_for_job(client, job["id"])["status"] == "done"
+        again = client.post("/api/undo", json={"batch_id": batch})
+        assert again.status_code == 409
+
+
+class TestBuiltinAcoustidKey:
+    """A fresh install fingerprints with the key built into the app."""
+
+    def test_builtin_key_turns_fingerprinting_on_with_no_key_of_your_own(self, client, monkeypatch):
+        monkeypatch.setattr("musictag.config.builtin_acoustid_key", lambda: "appkey123")
+        monkeypatch.setattr(type(client.config), "fpcalc", property(lambda self: "/bin/fpcalc"))
+        client.config.acoustid_api_key = ""
+        caps = client.get("/api/config").json()["_capabilities"]
+        assert caps["fingerprinting"] is True
+        assert caps["acoustid_builtin_key"] is True
+        assert caps["acoustid_key_set"] is False
+        # The built-in key is never sent to the UI.
+        assert "appkey123" not in client.get("/api/config").text
+
+    def test_your_own_key_wins(self, client, monkeypatch):
+        monkeypatch.setattr("musictag.config.builtin_acoustid_key", lambda: "appkey123")
+        client.config.acoustid_api_key = "mine456"
+        assert client.config.acoustid_key == "mine456"
+
+    def test_no_key_anywhere_means_no_fingerprinting(self, client, monkeypatch):
+        monkeypatch.setattr(type(client.config), "fpcalc", property(lambda self: "/bin/fpcalc"))
+        client.config.acoustid_api_key = ""
+        caps = client.get("/api/config").json()["_capabilities"]
+        assert caps["fingerprinting"] is False
+
+
+def test_builtin_key_reads_the_generated_file_and_the_environment(monkeypatch):
+    import sys
+    import types
+    from conftest import REAL_BUILTIN_ACOUSTID_KEY as real
+
+    monkeypatch.delenv("MUSICTAGGER_ACOUSTID_KEY", raising=False)
+    monkeypatch.setitem(sys.modules, "musictag._app_key",
+                        types.SimpleNamespace(ACOUSTID_API_KEY=" fromfile "))
+    assert real() == "fromfile"
+    monkeypatch.setenv("MUSICTAGGER_ACOUSTID_KEY", "fromenv")
+    assert real() == "fromenv"
+
+
+@ffmpeg_required
+class TestConvert:
+    def test_convert_adds_the_new_file_to_the_list(self, client, tmp_path, monkeypatch):
+        from musictag.journal import Journal
+        journal = Journal(tmp_path / "journal.db")
+        monkeypatch.setattr("musictag.convert.get_journal", lambda: journal)
+        track = make_ready_file(tmp_path / "in" / "a.wav", title="Glory Box", artist="Portishead")
+        client.state.add([track])
+
+        job = client.post("/api/convert", json={"paths": [track.path], "format": "mp3"}).json()
+        status = wait_for_job(client, job["id"])
+        assert status["status"] == "done", status.get("error")
+        assert status["result"]["converted"] == 1
+        new_path = str(tmp_path / "in" / "a.mp3")
+        assert client.state.get(new_path) is not None
+        assert client.state.get(track.path) is not None, "the original stays listed"
+
+    def test_unknown_format_is_refused(self, client):
+        response = client.post("/api/convert", json={"paths": ["x"], "format": "ogg"})
+        assert response.status_code == 400
+
+    def test_nothing_selected_is_refused(self, client):
+        response = client.post("/api/convert", json={"paths": [], "format": "mp3"})
+        assert response.status_code == 400

@@ -372,6 +372,77 @@ def test_failed_move_is_not_replayed_by_undo(library, cfg, journal, monkeypatch)
     assert not any("move" in m.lower() for m in result.messages)
 
 
+@ffmpeg_required
+class TestCompanionFiles:
+    def test_partial_album_leaves_the_cover_behind(self, library, cfg, journal):
+        """Moving one track of three must not strip the rest of their cover."""
+        cfg.keep_extra_files = True
+        album, files = library
+        Applier(cfg).apply(build_tracks(files)[:1], ApplyOptions(organize=True))
+        assert (album / "cover.jpg").exists()
+        assert (Path(cfg.organize_root) / "Portishead" / "Dummy (1994)" / "cover.jpg").exists()
+
+    def test_undo_brings_the_cover_back(self, library, cfg, journal):
+        cfg.keep_extra_files = True
+        album, files = library
+        report = Applier(cfg).apply(build_tracks(files), ApplyOptions(organize=True))
+        assert not (album / "cover.jpg").exists()
+
+        journal.undo(report.batch_id)
+        assert (album / "cover.jpg").exists()
+        assert not (Path(cfg.organize_root) / "Portishead" / "Dummy (1994)" / "cover.jpg").exists()
+
+    def test_a_failed_move_takes_no_companions(self, library, cfg, journal, monkeypatch):
+        cfg.keep_extra_files = True
+        album, files = library
+
+        def broken_move(src, dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("musictag.apply.shutil.move", broken_move)
+        Applier(cfg).apply(build_tracks(files), ApplyOptions(organize=True))
+        assert not (Path(cfg.organize_root) / "Portishead" / "Dummy (1994)" / "cover.jpg").exists()
+
+
+@ffmpeg_required
+class TestCancelAndReplay:
+    def test_cancel_stops_between_tracks(self, library, cfg, journal):
+        album, files = library
+        done = []
+        report = Applier(cfg).apply(
+            build_tracks(files), ApplyOptions(),
+            progress=lambda d, t, p: done.append(p),
+            cancelled=lambda: len(done) >= 1)
+        assert report.tagged == 1
+        assert read_file(files[1])[0].title == "Old Title 2"
+
+    def test_a_batch_is_only_undone_once(self, library, cfg, journal):
+        album, files = library
+        report = Applier(cfg).apply(build_tracks(files), ApplyOptions(organize=True))
+        first = journal.undo(report.batch_id)
+        assert first.restored > 0
+        assert journal.is_undone(report.batch_id)
+
+        second = journal.undo(report.batch_id)
+        assert second.restored == 0
+        assert "already been undone" in second.messages[0]
+        assert all(f.exists() for f in files)
+
+    def test_undo_never_overwrites_a_file_now_at_the_old_path(self, library, cfg, journal):
+        album, files = library
+        report = Applier(cfg).apply(build_tracks(files)[:1], ApplyOptions(organize=True))
+        assert not files[0].exists()
+        files[0].write_bytes(b"something new the user put here")
+
+        result = journal.undo(report.batch_id)
+        assert files[0].read_bytes() == b"something new the user put here"
+        restored = files[0].with_name(f"{files[0].stem} (2){files[0].suffix}")
+        assert restored.exists()
+        assert any("restored as" in m for m in result.messages)
+        # The tag restore followed the file, not its old path.
+        assert read_file(restored)[0].title == "Old Title 1"
+
+
 def test_journal_keeps_a_bounded_number_of_batches(tmp_path, monkeypatch):
     from musictag import journal as journal_mod
     monkeypatch.setattr(journal_mod, "KEEP_BATCHES", 5)

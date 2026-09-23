@@ -44,6 +44,9 @@ a = Analysis(
         "mutagen.mp3", "mutagen.flac", "mutagen.mp4", "mutagen.oggvorbis",
         "mutagen.oggopus", "mutagen.asf", "mutagen.wave", "mutagen.aiff",
         "mutagen.id3",
+        # Written by the release workflow from a secret, and imported lazily
+        # inside a function - name it so it is always frozen in.
+        "musictag._app_key",
     ],
     hookspath=[],
     runtime_hooks=[],

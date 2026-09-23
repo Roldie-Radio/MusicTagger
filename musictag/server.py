@@ -24,11 +24,12 @@ from . import __version__
 from .apply import Applier, ApplyOptions
 from .cache import http_cache
 from .config import APP_DIR, get_config, set_config
+from .convert import FORMATS as CONVERT_FORMATS, convert_tracks
 from .export_plex import commit_export, plan_export
 from .fingerprint import FPCALC_HOMEPAGE, fpcalc_download_url, install_fpcalc
-from .jobs import EDIT_BLOCKING_JOBS, Job, JobConflict, get_jobs
+from .jobs import EDIT_BLOCKING_JOBS, LIBRARY_JOBS, Job, JobConflict, get_jobs
 from .journal import get_journal
-from .library import scan as scan_library
+from .library import load_track, scan as scan_library
 from .matching import Matcher
 from .models import Track, TrackTags, quality_scale
 from .organize import plan_all, plan_path
@@ -113,6 +114,11 @@ class ChooseRequest(BaseModel):
 class EditRequest(BaseModel):
     path: str
     tags: dict[str, Any]
+
+
+class ConvertRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list)
+    format: str = "mp3"
 
 
 class UndoRequest(BaseModel):
@@ -445,6 +451,7 @@ def api_apply(req: ApplyRequest) -> dict[str, Any]:
         report = applier.apply(
             tracks, options,
             progress=lambda done, total, path: job.progress(done, total, Path(path).name),
+            cancelled=lambda: job.cancelled,
         )
         for track in tracks:
             old = originals[id(track)]
@@ -469,6 +476,48 @@ def api_preview_organize(req: SelectionRequest) -> dict[str, Any]:
     moves = [{"from": src, "to": dest} for src, dest in planned.items() if src != dest]
     return {"count": len(moves), "moves": moves[:500],
             "unchanged": len(planned) - len(moves)}
+
+
+# ===========================================================================
+# Converting to another format
+# ===========================================================================
+
+@app.get("/api/convert/formats")
+def api_convert_formats() -> dict[str, Any]:
+    return {"formats": [{"id": key, "label": spec["label"]}
+                        for key, spec in CONVERT_FORMATS.items()]}
+
+
+@app.post("/api/convert")
+def api_convert(req: ConvertRequest) -> dict[str, Any]:
+    """Convert selected tracks. New files go beside the originals."""
+    cfg = get_config()
+    if req.format not in CONVERT_FORMATS:
+        raise HTTPException(400, f"Unknown format: {req.format}")
+    if not cfg.ffmpeg:
+        raise HTTPException(400, "ffmpeg was not found. Install it, or set its path in Settings.")
+    state = get_state()
+    tracks = state.select(req.paths or None)
+    if not req.paths or not tracks:
+        raise HTTPException(400, "Select the tracks to convert first.")
+
+    def run(job: Job):
+        report = convert_tracks(
+            [t.path for t in tracks], req.format, cfg,
+            progress=lambda done, total, name: job.progress(done, total, name),
+            cancelled=lambda: job.cancelled,
+        )
+        # The new files join the list straight away, so they can be checked,
+        # tagged or exported like any other.
+        created = [load_track(Path(p)) for p in report.created]
+        state.add(created)
+        state.persist(created)
+        job.log(f"Converted {report.converted}, skipped {report.skipped}, "
+                f"failed {report.failed}")
+        return report.to_dict()
+
+    label = CONVERT_FORMATS[req.format]["label"]
+    return get_jobs().submit("convert", run, message=f"Converting to {label}").to_dict()
 
 
 # ===========================================================================
@@ -677,6 +726,8 @@ def api_history_detail(batch_id: str) -> dict[str, Any]:
 def api_undo(req: UndoRequest) -> dict[str, Any]:
     cfg = get_config()
     journal = get_journal()
+    if journal.is_undone(req.batch_id):
+        raise HTTPException(409, "This change has already been undone.")
 
     def run(job: Job):
         job.log(f"Undoing batch {req.batch_id}")
@@ -691,6 +742,11 @@ def api_undo(req: UndoRequest) -> dict[str, Any]:
 
 @app.post("/api/clear")
 def api_clear() -> dict[str, Any]:
+    # A job still working on these tracks would write them straight back,
+    # so the list would look cleared and then reappear.
+    busy = get_jobs().running_any(LIBRARY_JOBS)
+    if busy:
+        raise HTTPException(409, str(JobConflict(busy)))
     get_state().clear()
     return {"ok": True}
 

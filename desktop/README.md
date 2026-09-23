@@ -105,8 +105,10 @@ if they are not already there (never overwriting a tool you already have)-
 this is the same folder `Config.resolve_tool()` in `musictag/config.py`
 already checks first, so no backend code has to know it is running inside a
 packaged app. ffmpeg, ffprobe and quality analysis work immediately with no
-setup. AcoustID fingerprinting still needs your own free API key (Settings →
-Identification) - that part was never a bundling problem to solve.
+setup. Fingerprinting works straight away too: fpcalc is bundled, and the
+release build embeds MusicTagger's AcoustID application key from the
+`ACOUSTID_API_KEY` repository secret. A key entered in Settings →
+Identification still overrides it.
 
 ## Updates
 
@@ -118,6 +120,12 @@ background; once it is ready and no job is running, a dialog offers *Restart
 now* or *Later* - later means it installs silently the next time the app is
 closed. Before the installer runs, the backend is stopped synchronously so
 none of its files are locked.
+
+Settings → Quality → Updates has an **Update now** button that checks and
+downloads on demand, then offers **Restart and install**. The page reaches the
+updater through `preload.js`, which exposes only those update calls; the
+window stays sandboxed, and `updater.js` ignores requests from any page that
+is not the app's own `http://127.0.0.1` one.
 
 The shell passes `MUSICTAGGER_AUTO_UPDATE=1` to the backend, so the in-app
 banner says an update is on its way instead of linking to a download.

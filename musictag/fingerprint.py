@@ -91,7 +91,7 @@ class AcoustIDClient:
 
     @property
     def available(self) -> bool:
-        return bool(self.cfg.acoustid_api_key.strip() and self.cfg.fpcalc)
+        return bool(self.cfg.acoustid_key and self.cfg.fpcalc)
 
     def lookup(self, duration: int, fingerprint: str) -> list[dict[str, Any]]:
         """Return AcoustID results, best score first.
@@ -100,7 +100,7 @@ class AcoustIDClient:
 
             {"score": 0.94, "id": "...", "recordings": [{"id": "...", ...}]}
         """
-        key = self.cfg.acoustid_api_key.strip()
+        key = self.cfg.acoustid_key
         if not key:
             raise FingerprintUnavailable("No AcoustID API key configured.")
         if not fingerprint:
