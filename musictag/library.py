@@ -23,7 +23,13 @@ SKIP_DIRS = {
 def iter_audio_files(roots: Iterable[str | Path], *, recursive: bool = True) -> Iterator[Path]:
     """Yield every supported audio file under ``roots``."""
     for root in roots:
-        root_path = Path(root)
+        # Always absolute: tracks are keyed by path, and a relative one only
+        # means something from the directory the scan happened to run in.
+        # "musictag scan ." would otherwise store "-odd.flac", which a later
+        # run from elsewhere cannot find and fpcalc reads as an option.
+        # abspath, not resolve(): resolving turns a mapped Windows drive into
+        # a UNC path, and a symlinked library into somewhere else entirely.
+        root_path = Path(os.path.abspath(root))
         if root_path.is_file():
             if root_path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 yield root_path

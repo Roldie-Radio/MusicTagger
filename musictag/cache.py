@@ -16,6 +16,10 @@ from typing import Any, Optional
 
 from .config import CACHE_DB, STATE_DB
 
+#: The longest any lookup is trusted (HttpClient's default TTL). Anything older
+#: is ignored on read anyway, so keeping it only grows cache.db forever.
+HTTP_CACHE_MAX_AGE_S = 60 * 60 * 24 * 30
+
 
 class SqliteKV:
     """Thread-safe key/value store with optional TTL."""
@@ -93,6 +97,14 @@ class SqliteKV:
     def count(self) -> int:
         return self._conn().execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0]
 
+    def purge_older_than(self, seconds: float) -> int:
+        """Delete entries written more than ``seconds`` ago; return how many."""
+        conn = self._conn()
+        cur = conn.execute(f"DELETE FROM {self.table} WHERE created < ?",
+                           (time.time() - seconds,))
+        conn.commit()
+        return cur.rowcount
+
 
 _http_cache: SqliteKV | None = None
 _state_store: SqliteKV | None = None
@@ -103,6 +115,8 @@ def http_cache() -> SqliteKV:
     global _http_cache
     if _http_cache is None:
         _http_cache = SqliteKV(CACHE_DB, "http")
+        # Once per run: expired responses are never served, only stored.
+        _http_cache.purge_older_than(HTTP_CACHE_MAX_AGE_S)
     return _http_cache
 
 

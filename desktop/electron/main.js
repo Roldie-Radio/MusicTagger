@@ -13,6 +13,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { startAutoUpdate } = require('./updater');
+const { isBackendUrl, isSafeExternalUrl } = require('./links');
 
 // A second launch should focus the existing window, not start a second
 // backend fighting over the same sqlite state on a different port.
@@ -21,6 +22,8 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let mainWindow = null;
+// Set once the backend is up; until then no in-window navigation is allowed.
+let backendOrigin = null;
 let backendProcess = null;
 let shuttingDown = false;
 
@@ -155,6 +158,14 @@ function stopBackend() {
 
 // --------------------------------------------------------------- window
 
+function openExternalSafely(url) {
+  if (isSafeExternalUrl(url)) {
+    shell.openExternal(url);
+  } else {
+    console.warn(`Refused to open a non-https link: ${url}`);
+  }
+}
+
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -173,15 +184,15 @@ async function createWindow() {
 
   // The app only ever talks to its own local backend; anything that tries to
   // navigate elsewhere (a stray external link) opens in the real browser
-  // instead of inside this window.
+  // instead of inside this window - and only if it is https (see links.js).
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalSafely(url);
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('http://127.0.0.1:')) {
+    if (!isBackendUrl(url, backendOrigin)) {
       event.preventDefault();
-      shell.openExternal(url);
+      openExternalSafely(url);
     }
   });
 
@@ -191,7 +202,8 @@ async function createWindow() {
     installBundledTools();
     const port = await startBackend();
     await waitForHealthy(port);
-    await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
+    backendOrigin = `http://127.0.0.1:${port}`;
+    await mainWindow.loadURL(`${backendOrigin}/`);
     // Only an installed build has anywhere to update to; running from source
     // there is no installer to replace.
     if (app.isPackaged) {
