@@ -206,10 +206,15 @@ function renderUpdateNotice() {
   if (loadStored('musictagger-dismissed-update', '') === info.latest) { box.hidden = true; return; }
 
   box.innerHTML = '';
-  box.appendChild(document.createTextNode(
-    `MusicTagger ${info.latest} is available. You have ${info.current}. `));
+  // In the installed desktop app the shell downloads the update itself and
+  // asks to restart once it is ready, so say that rather than send people off
+  // to download an installer they do not need.
+  box.appendChild(document.createTextNode(info.auto_install
+    ? `MusicTagger ${info.latest} is available and is downloading in the background. `
+      + `You will be asked to restart when it is ready. `
+    : `MusicTagger ${info.latest} is available. You have ${info.current}. `));
 
-  const link = el('a', '', 'View the release');
+  const link = el('a', '', info.auto_install ? 'What\u2019s new' : 'View the release');
   link.href = info.url;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
@@ -246,7 +251,11 @@ function updateStatusText(info) {
   if (!info.enabled) return 'Update checking is switched off.';
   if (info.error) return 'Could not reach GitHub just now.';
   if (!info.latest) return 'No releases have been published yet.';
-  if (info.available) return `${info.latest} is available - you have ${info.current}.`;
+  if (info.available) {
+    return info.auto_install
+      ? `${info.latest} is available and will be installed automatically - you have ${info.current}.`
+      : `${info.latest} is available - you have ${info.current}.`;
+  }
   return `Up to date (${info.current}).`;
 }
 

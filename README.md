@@ -352,14 +352,25 @@ musictag/
 ## Updates
 
 The app asks GitHub at most once every six hours whether a newer release
-exists, and shows a banner if one does. **Nothing is downloaded or installed
-automatically** - the banner links to the release and you decide.
+exists.
+
+- **Installed desktop app:** the new version downloads in the background.
+  When it is ready (and no job is running) you are asked to restart; choose
+  *Later* and it installs the next time you close MusicTagger. Your settings
+  and install folder are kept. This is handled by
+  [`desktop/electron/updater.js`](desktop/electron/updater.js) using
+  `electron-updater`.
+- **Running from source:** nothing is installed; a banner links to the
+  release.
 
 This is the only request MusicTagger makes on its own initiative rather than
 because you asked it to look something up, so it is a single switch to turn
 off: Settings → Audio analysis → Updates → *Check for new versions*. With it
-off, no request is made at all. There is also a *Check now* button there for
-an immediate answer that ignores the cache.
+off, no request is made at all, for the banner or the download. There is also
+a *Check now* button there for an immediate answer that ignores the cache.
+
+Installed copies only update to **published** releases - never drafts or
+prereleases.
 
 Releases are built by
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which has two
@@ -378,10 +389,15 @@ mints a tag that does not exist yet when a release naming it is published. This
 is the route to use when a token is scoped to `refs/heads/` and is refused on
 `refs/tags/`, which is common for CI and app credentials.
 
-Either way the installer is uploaded to a **draft** release, so it can be
-checked before anything is public. Until that draft is published,
-`/releases/latest` keeps returning 404 and the in-app check keeps correctly
-reporting there is nothing to update to.
+By default the installer is uploaded to a **draft** release, so it can be
+checked before anything is public. Until that draft is published, nothing sees
+it: the in-app check reports nothing to update to and no installed copy
+downloads it. Tick *publish* when running the workflow by hand to skip the
+draft and make the release live as soon as the build succeeds.
+
+Every release carries `latest.yml` and a `.blockmap` next to the installer.
+Installed copies read those to find and verify updates, so don't delete them
+from a release.
 
 Bump `__version__` in `musictag/__init__.py` and `version` in
 `desktop/electron/package.json` together. A tagged build fails if the tag

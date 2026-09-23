@@ -3,9 +3,11 @@
 Every other network call this app makes happens because the user asked for
 something - identify this track, fetch that cover. This one is the exception:
 it goes out on the app's own initiative. That is the whole reason it is behind
-a setting that turns it off completely, and the reason it never downloads or
-installs anything by itself. It reports what exists and links to it; deciding
-to install stays with the user.
+a setting that turns it off completely. This module only reports what exists.
+In the installed desktop app, the Electron shell (desktop/electron/updater.js)
+downloads and installs the update under the same setting, and tells us so
+through ``MUSICTAGGER_AUTO_UPDATE`` so the UI can describe what will happen.
+Running from source nothing is installed; the banner links to the release.
 
 A failed check is not a failed app. Every error path here ends in an
 ``UpdateInfo`` describing what went wrong, never an exception reaching the UI.
@@ -14,6 +16,7 @@ A failed check is not a failed app. Every error path here ends in an
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
@@ -50,6 +53,14 @@ CHECK_TIMEOUT = 6.0
 #: a short excerpt and links out for the rest, so there is no reason to carry
 #: the whole thing through the API response.
 NOTES_LIMIT = 2000
+
+#: Set to "1" by the desktop shell when it installs updates itself.
+AUTO_UPDATE_ENV = "MUSICTAGGER_AUTO_UPDATE"
+
+
+def auto_install_enabled() -> bool:
+    """Whether something outside this process will install the update."""
+    return os.environ.get(AUTO_UPDATE_ENV, "").strip() == "1"
 
 _VERSION_RE = re.compile(
     r"^v?(?P<major>\d+)(?:\.(?P<minor>\d+))?(?:\.(?P<patch>\d+))?(?:[-+](?P<pre>.+))?$"
@@ -104,6 +115,9 @@ class UpdateInfo:
     published_at: str = ""
     notes: str = ""
     error: str = ""
+    #: True when the desktop shell downloads and installs updates itself, so
+    #: the UI says "restart to update" rather than "go and download it".
+    auto_install: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -129,7 +143,7 @@ def check_for_update(cfg: Config | None = None, *, force: bool = False,
     boundary is the only way to cover the cases that matter.
     """
     cfg = cfg or get_config()
-    info = UpdateInfo(current=__version__)
+    info = UpdateInfo(current=__version__, auto_install=auto_install_enabled())
 
     if not cfg.update_check_enabled:
         info.enabled = False

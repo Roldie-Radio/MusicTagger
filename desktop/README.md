@@ -108,6 +108,25 @@ packaged app. ffmpeg, ffprobe and quality analysis work immediately with no
 setup. AcoustID fingerprinting still needs your own free API key (Settings →
 Identification) - that part was never a bundling problem to solve.
 
+## Updates
+
+An installed copy updates itself from GitHub Releases through
+`electron-updater` (`updater.js`). About 30 seconds after start-up and every
+six hours after that it asks the backend whether *Check for new versions* is
+on, and only then asks GitHub. A newer published release downloads in the
+background; once it is ready and no job is running, a dialog offers *Restart
+now* or *Later* - later means it installs silently the next time the app is
+closed. Before the installer runs, the backend is stopped synchronously so
+none of its files are locked.
+
+The shell passes `MUSICTAGGER_AUTO_UPDATE=1` to the backend, so the in-app
+banner says an update is on its way instead of linking to a download.
+`npm start` does not auto-update; there is no installer to replace.
+
+The installer is not code-signed, so Windows SmartScreen may warn on the
+first manual install. Updates are downloaded by the app itself rather than a
+browser, so they normally install without that warning.
+
 ## Uninstalling
 
 Standard NSIS uninstaller (Start Menu → MusicTagger → Uninstall, or Windows

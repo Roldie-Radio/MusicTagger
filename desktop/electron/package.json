@@ -1,13 +1,16 @@
 {
   "name": "musictagger-desktop",
   "productName": "MusicTagger",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Automatic music tagging, Plex organisation and audio quality analysis.",
   "private": true,
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "electron": "^32.0.0",
@@ -30,6 +33,7 @@
     },
     "files": [
       "main.js",
+      "updater.js",
       "package.json"
     ],
     "extraResources": [
