@@ -50,3 +50,8 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+      # The desktop shell's URL rules (links.js) and a guard that every file
+      # main.js loads is actually packaged. Plain Node, no Electron needed.
+      - name: Run desktop shell tests
+        run: node --test desktop/electron/links.test.js

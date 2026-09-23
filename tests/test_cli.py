@@ -66,3 +66,27 @@ class TestScanLibraryPathMemory:
     def test_no_paths_and_nothing_configured_is_a_clean_error(self, cfg, state, capsys):
         assert cmd_scan(args([])) == 2
         assert "No paths given" in capsys.readouterr().out
+
+
+class TestRelativePaths:
+    """A relative path only means something from the directory it was typed in."""
+
+    def _wav(self, path):
+        import wave
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\x00\x00" * 800)
+
+    def test_scanning_a_relative_folder_stores_absolute_paths(self, cfg, state, tmp_path,
+                                                             monkeypatch):
+        folder = tmp_path / "Music"
+        folder.mkdir()
+        self._wav(folder / "-odd name.wav")
+        monkeypatch.chdir(folder)
+
+        assert cmd_scan(args(["."])) == 0
+        assert cfg.library_paths == [str(folder)]
+        paths = [t.path for t in state.all()]
+        assert paths == [str(folder / "-odd name.wav")]

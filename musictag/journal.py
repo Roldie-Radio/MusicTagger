@@ -22,6 +22,10 @@ from .config import JOURNAL_DB
 from .models import TrackTags
 from .tags import write_file
 
+#: How many Apply/export batches stay undoable. History shows the latest 50;
+#: this keeps twice that so a batch never vanishes the moment it scrolls off.
+KEEP_BATCHES = 100
+
 #: Key inside a "tags" entry's ``prev_tags`` JSON listing the fields Apply set.
 WRITTEN_KEY = "_written"
 
@@ -75,6 +79,9 @@ class Journal:
 
     # ------------------------------------------------------------------
     def start_batch(self, description: str) -> str:
+        # Every new batch trims the oldest, so the journal stays bounded
+        # without anyone having to remember to clean it up.
+        self.prune(keep=KEEP_BATCHES - 1)
         batch_id = uuid.uuid4().hex[:12]
         conn = self._conn()
         conn.execute(
