@@ -6,6 +6,7 @@ here shows up as a silently empty screen rather than an exception.
 
 from __future__ import annotations
 
+import threading
 import time
 import wave
 from pathlib import Path
@@ -22,6 +23,7 @@ pytest.importorskip("httpx", reason="fastapi TestClient needs httpx")
 from fastapi.testclient import TestClient                     # noqa: E402
 
 from musictag import server                                   # noqa: E402
+from musictag.jobs import JobManager                           # noqa: E402
 from musictag.config import Config, set_config                # noqa: E402
 from musictag.state import AppState                           # noqa: E402
 
@@ -40,6 +42,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr("musictag.state.get_state", lambda: state)
     # Persisting would write to the shared sqlite store; not what we are testing.
     monkeypatch.setattr(state, "persist", lambda tracks=None: None)
+    # A job left running by one test must not block the next one's.
+    jobs = JobManager()
+    monkeypatch.setattr(server, "get_jobs", lambda: jobs)
 
     # The real UI reaches the server as 127.0.0.1; TestClient defaults to
     # "testserver", which the local-only guard rightly refuses.
@@ -756,4 +761,76 @@ class TestLocalOnlyGuard:
 
     def test_same_origin_post_is_allowed(self, client):
         response = client.post("/api/clear", headers={"origin": "http://127.0.0.1:8731"})
+        assert response.status_code == 200
+
+
+class TestJobConflicts:
+    """Jobs that would trample each other's tracks or files are refused, not raced."""
+
+    @pytest.fixture
+    def held(self, client):
+        """Start a job of a given kind that stays running until the test ends."""
+        gate = threading.Event()
+        jobs = server.get_jobs()
+
+        def start(kind: str):
+            job = jobs.submit(kind, lambda job: gate.wait(10))
+            for _ in range(100):
+                if job.status == "running":
+                    break
+                time.sleep(0.01)
+            return job
+
+        yield start
+        gate.set()
+
+    def test_apply_is_refused_while_tagging(self, client, held):
+        add_track(client.state)
+        held("identify")
+        response = client.post("/api/apply", json={"paths": []})
+        assert response.status_code == 409
+        assert "tagging" in response.json()["error"]
+        assert response.json()["running"]["kind"] == "identify"
+
+    def test_tagging_and_quality_may_run_together(self, client, held):
+        held("quality")
+        job = server.get_jobs().submit("identify", lambda job: None)
+        assert job.kind == "identify"
+
+    def test_same_kind_cannot_run_twice(self, client, held):
+        add_track(client.state)
+        held("identify")
+        response = client.post("/api/identify", json={"paths": [], "only_pending": False})
+        assert response.status_code == 409
+
+    def test_refused_replace_scan_does_not_wipe_the_library(self, client, held, tmp_path):
+        add_track(client.state)
+        held("apply")
+        response = client.post("/api/scan", json={"paths": [str(tmp_path)], "replace": True})
+        assert response.status_code == 409
+        assert len(client.state.all()) == 1
+
+    def test_hand_edit_is_refused_while_tagging(self, client, held):
+        track = add_track(client.state)
+        held("identify")
+        response = client.post("/api/track/edit",
+                               json={"path": track.path, "tags": {"title": "Mine"}})
+        assert response.status_code == 409
+        assert track.match.proposed.title == "Song"
+
+    def test_hand_edit_is_allowed_during_a_quality_check(self, client, held):
+        track = add_track(client.state)
+        held("quality")
+        response = client.post("/api/track/edit",
+                               json={"path": track.path, "tags": {"title": "Mine"}})
+        assert response.status_code == 200
+
+    def test_finished_job_no_longer_blocks(self, client):
+        add_track(client.state)
+        job = server.get_jobs().submit("identify", lambda job: None)
+        for _ in range(100):
+            if job.status == "done":
+                break
+            time.sleep(0.01)
+        response = client.post("/api/apply", json={"paths": [], "dry_run": True})
         assert response.status_code == 200

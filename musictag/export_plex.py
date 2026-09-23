@@ -149,6 +149,9 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
     * ``"replace"``  - move whatever is at ``existing_path`` into a trash
                        folder inside the Plex root first (never deleted
                        outright), then move the incoming file to ``dest``.
+                       The duplicate need not live at ``dest`` itself, so if
+                       something else still occupies ``dest`` the name is
+                       disambiguated exactly as for ``"export"``.
     * ``"skip"``     - leave the incoming file where it is; nothing moves.
     """
     journal = get_journal()
@@ -173,8 +176,12 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
                     shutil.move(str(existing), str(trash))
                     journal.record(report.batch_id, "move", str(existing), dest=str(trash))
                     report.replaced += 1
-            else:
-                dest_path = unique_path(dest_path)
+            # Always, including after a replace: the trashed duplicate may
+            # have been somewhere other than ``dest``, and moving onto an
+            # occupied name silently overwrites (shutil.move falls back to
+            # a copy that clobbers the target) - the one thing export must
+            # never do to a file already in the Plex library.
+            dest_path = unique_path(dest_path)
 
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(source), str(dest_path))

@@ -26,7 +26,7 @@ from .cache import http_cache
 from .config import APP_DIR, get_config, set_config
 from .export_plex import commit_export, plan_export
 from .fingerprint import FPCALC_HOMEPAGE, fpcalc_download_url, install_fpcalc
-from .jobs import Job, get_jobs
+from .jobs import EDIT_BLOCKING_JOBS, Job, JobConflict, get_jobs
 from .journal import get_journal
 from .library import scan as scan_library
 from .matching import Matcher
@@ -287,10 +287,12 @@ def api_scan(req: ScanRequest) -> dict[str, Any]:
         cfg.save()
 
     state = get_state()
-    if req.replace:
-        state.clear()
 
     def run(job: Job):
+        # Inside the job, not before submitting it: a scan refused because
+        # another job is running must not have wiped the library first.
+        if req.replace:
+            state.clear()
         job.log(f"Scanning {len(paths)} folder(s)")
         tracks = scan_library(
             paths, recursive=req.recursive, workers=cfg.scan_workers,
@@ -553,9 +555,17 @@ def api_track(path: str) -> dict[str, Any]:
     return payload
 
 
+def _refuse_edit_while_busy() -> None:
+    """A hand edit made mid-Identify or mid-Apply would be lost or half-written."""
+    busy = get_jobs().running_any(EDIT_BLOCKING_JOBS)
+    if busy:
+        raise HTTPException(409, str(JobConflict(busy)))
+
+
 @app.post("/api/track/choose")
 def api_choose(req: ChooseRequest) -> dict[str, Any]:
     """Pick a different candidate for a track."""
+    _refuse_edit_while_busy()
     state = get_state()
     track = state.get(req.path)
     if not track or not track.match:
@@ -582,6 +592,7 @@ def api_choose(req: ChooseRequest) -> dict[str, Any]:
 @app.post("/api/track/edit")
 def api_edit(req: EditRequest) -> dict[str, Any]:
     """Hand-edit the proposed tags for one track."""
+    _refuse_edit_while_busy()
     state = get_state()
     track = state.get(req.path)
     if not track:
@@ -719,6 +730,13 @@ def index() -> FileResponse:
 @app.exception_handler(HTTPException)
 def http_error(request, exc: HTTPException):
     return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+
+@app.exception_handler(JobConflict)
+def job_conflict(request, exc: JobConflict):
+    """Every job endpoint refuses the same way: 409, with what to wait for."""
+    return JSONResponse({"error": str(exc), "running": exc.running.to_dict()},
+                        status_code=409)
 
 
 if WEB_DIR.exists():

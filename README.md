@@ -255,6 +255,13 @@ recordings, loud ones, and every spectral tilt in between.
   copies it made rather than removing files.
 - **Preview first.** The Preview button shows every planned tag write and file
   move without touching anything.
+- **Conflicting work never overlaps.** Tagging and a quality check can run
+  side by side, but a scan, Apply, export or undo only starts when nothing else is
+  touching the library - otherwise the app tells you what to wait for rather
+  than racing it. Hand edits are held off while tagging or applying, so they cannot be
+  overwritten mid-run.
+- **Export never overwrites.** A file already sitting where an export would
+  land is kept; the incoming file gets a `(2)` name instead.
 - **Only this app can drive the local server.** It answers only requests
   addressed to `127.0.0.1`/`localhost` and refuses state-changing requests from
   other websites, so a page open in your browser cannot reach your files
