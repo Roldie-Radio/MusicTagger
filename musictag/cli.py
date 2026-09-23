@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import socket
 import sys
 import threading
@@ -126,7 +127,9 @@ def cmd_scan(args) -> int:
     # matching the app: one current folder, not an accumulating list. Bare
     # `musictag scan` (falling back to cfg.library_paths above) leaves it as-is.
     if args.paths:
-        cfg.library_paths = list(dict.fromkeys(args.paths))
+        # Stored absolute, like the tracks, so it still means the same folder
+        # when the next command runs from a different directory.
+        cfg.library_paths = list(dict.fromkeys(os.path.abspath(p) for p in args.paths))
         cfg.save()
 
     print(f"Found {len(tracks)} audio files ({added} new).")

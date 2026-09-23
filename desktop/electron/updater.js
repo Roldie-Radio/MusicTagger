@@ -17,6 +17,7 @@
 
 const { app, dialog, ipcMain } = require('electron');
 const http = require('http');
+const { isBackendUrl } = require('./links');
 
 // Same cadence as the backend check, and the first check waits until the
 // window has had time to load so it never competes with start-up.
@@ -155,10 +156,13 @@ async function offerRestart() {
 }
 
 // Only the app's own page may drive updates - never some other page that
-// ended up in the window.
+// ended up in the window. An exact origin match, not a prefix test:
+// "http://127.0.0.1:8731@evil.example/" starts with "http://127.0.0.1:" but
+// its host is evil.example (see links.js).
 function fromOwnPage(event) {
   const url = (event.senderFrame && event.senderFrame.url) || '';
-  return url.startsWith('http://127.0.0.1:');
+  if (!ctx) return false;
+  return isBackendUrl(url, `http://127.0.0.1:${ctx.port}`);
 }
 
 // Registered in every build, so the UI always gets an answer - running from

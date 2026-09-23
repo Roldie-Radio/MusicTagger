@@ -59,3 +59,17 @@ def test_overwrite_replaces_the_value(tmp_path):
     kv.set("k", "second")
     assert kv.get("k") == "second"
     assert kv.count() == 1
+
+
+def test_purge_drops_only_entries_older_than_the_limit(tmp_path, monkeypatch):
+    import time as _time
+    from musictag.cache import SqliteKV
+    kv = SqliteKV(tmp_path / "c.db", "http")
+    now = _time.time()
+    monkeypatch.setattr("musictag.cache.time.time", lambda: now - 40 * 86400)
+    kv.set("old", {"x": 1})
+    monkeypatch.setattr("musictag.cache.time.time", lambda: now)
+    kv.set("new", {"x": 2})
+    assert kv.purge_older_than(30 * 86400) == 1
+    assert kv.get("old") is None
+    assert kv.get("new") == {"x": 2}

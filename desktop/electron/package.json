@@ -1,7 +1,7 @@
 {
   "name": "musictagger-desktop",
   "productName": "MusicTagger",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Automatic music tagging, Plex organisation and audio quality analysis.",
   "private": true,
   "main": "main.js",
@@ -35,6 +35,7 @@
       "main.js",
       "updater.js",
       "preload.js",
+      "links.js",
       "package.json"
     ],
     "extraResources": [

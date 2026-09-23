@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import requests
 
-from ..cache import http_cache
+from ..cache import HTTP_CACHE_MAX_AGE_S, http_cache
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ class HttpClient:
     """A ``requests`` session with caching, rate limiting and bounded retries."""
 
     def __init__(self, user_agent: str, rate_limiter: Optional[RateLimiter] = None,
-                 cache_ttl: float = 60 * 60 * 24 * 30):
+                 cache_ttl: float = HTTP_CACHE_MAX_AGE_S):
         self.session = requests.Session()
         self.session.headers["User-Agent"] = user_agent
         self.limiter = rate_limiter

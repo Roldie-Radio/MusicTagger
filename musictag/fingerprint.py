@@ -33,6 +33,17 @@ FPCALC_RELEASES = {
     "linux": "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz",
 }
 
+#: SHA-256 of each archive above. fpcalc is an executable the app then runs on
+#: every file, so the download is checked against these before anything is
+#: written - HTTPS proves who served it, this proves it is the build that was
+#: reviewed. Measured from the v1.5.1 release assets; a new version needs new
+#: hashes, never a skipped check.
+FPCALC_SHA256 = {
+    "win32": "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc",
+    "darwin": "c6c2797c4f087cf139eedd71554bc59ef8f26a783dc00c7f3ad5ae71d3a616fe",
+    "linux": "4d7433a7f778e5946d7225230681cbcd634e153316ecac87c538c33ac32387a5",
+}
+
 #: fpcalc only needs the first couple of minutes to produce a usable fingerprint.
 FINGERPRINT_LENGTH_S = 120
 
@@ -144,15 +155,20 @@ class AcoustIDClient:
 # Optional installer, only ever run when the user clicks "Install" in Settings
 # ---------------------------------------------------------------------------
 
-def fpcalc_download_url() -> Optional[str]:
+def _fpcalc_platform() -> Optional[str]:
     import sys
     if sys.platform.startswith("win"):
-        return FPCALC_RELEASES["win32"]
+        return "win32"
     if sys.platform == "darwin":
-        return FPCALC_RELEASES["darwin"]
+        return "darwin"
     if sys.platform.startswith("linux"):
-        return FPCALC_RELEASES["linux"]
+        return "linux"
     return None
+
+
+def fpcalc_download_url() -> Optional[str]:
+    platform = _fpcalc_platform()
+    return FPCALC_RELEASES[platform] if platform else None
 
 
 def install_fpcalc(progress=None) -> str:
@@ -178,6 +194,15 @@ def install_fpcalc(progress=None) -> str:
     resp = requests.get(url, timeout=120)
     resp.raise_for_status()
 
+    import hashlib
+    expected = FPCALC_SHA256[_fpcalc_platform()]
+    actual = hashlib.sha256(resp.content).hexdigest()
+    if actual != expected:
+        raise FingerprintUnavailable(
+            f"The fpcalc download did not match the expected checksum, so it was not "
+            f"installed (got {actual[:12]}..., expected {expected[:12]}...). "
+            f"Try again later, or install Chromaprint yourself from {FPCALC_HOMEPAGE}")
+
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     exe_name = "fpcalc.exe" if os.name == "nt" else "fpcalc"
     target = TOOLS_DIR / exe_name
@@ -185,11 +210,15 @@ def install_fpcalc(progress=None) -> str:
     payload = io.BytesIO(resp.content)
     if url.endswith(".zip"):
         with zipfile.ZipFile(payload) as zf:
-            member = next(n for n in zf.namelist() if n.rsplit("/", 1)[-1] == exe_name)
+            member = next((n for n in zf.namelist() if n.rsplit("/", 1)[-1] == exe_name), None)
+            if member is None:
+                raise FingerprintUnavailable("The downloaded archive did not contain fpcalc")
             target.write_bytes(zf.read(member))
     else:
         with tarfile.open(fileobj=payload, mode="r:gz") as tf:
-            member = next(m for m in tf.getmembers() if m.name.rsplit("/", 1)[-1] == exe_name)
+            member = next((m for m in tf.getmembers() if m.name.rsplit("/", 1)[-1] == exe_name), None)
+            if member is None:
+                raise FingerprintUnavailable("The downloaded archive did not contain fpcalc")
             extracted = tf.extractfile(member)
             if extracted is None:
                 raise FingerprintUnavailable("Archive did not contain fpcalc")

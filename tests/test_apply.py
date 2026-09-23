@@ -441,3 +441,13 @@ class TestCancelAndReplay:
         assert any("restored as" in m for m in result.messages)
         # The tag restore followed the file, not its old path.
         assert read_file(restored)[0].title == "Old Title 1"
+
+
+def test_journal_keeps_a_bounded_number_of_batches(tmp_path, monkeypatch):
+    from musictag import journal as journal_mod
+    monkeypatch.setattr(journal_mod, "KEEP_BATCHES", 5)
+    j = Journal(tmp_path / "bounded.db")
+    ids = [j.start_batch(f"batch {i}") for i in range(12)]
+    kept = [b["id"] for b in j.list_batches(limit=100)]
+    assert len(kept) == 5
+    assert set(kept) == set(ids[-5:]), "the newest batches are the ones kept"
