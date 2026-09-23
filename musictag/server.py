@@ -13,8 +13,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -41,6 +42,44 @@ log = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 
 app = FastAPI(title="MusicTagger", version=__version__, docs_url=None, redoc_url=None)
+
+
+# ===========================================================================
+# Local-only guard
+# ===========================================================================
+
+#: Hostnames the UI legitimately reaches this server by. Binding to 127.0.0.1
+#: stops other machines connecting, but not other *websites*: a page can point
+#: its own domain at 127.0.0.1 (DNS rebinding) and its requests then arrive
+#: here same-origin, able to read folders, move files, or set ``ffmpeg_path``
+#: to any program and have the next quality scan run it. Such a request still
+#: names the attacker's domain in its Host header, which is what this checks.
+ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _hostname(value: str) -> str:
+    """``host[:port]`` -> ``host``, lowercased; IPv6 brackets kept intact."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value.split("]", 1)[0] + "]"
+    return value.rsplit(":", 1)[0] if ":" in value else value
+
+
+@app.middleware("http")
+async def local_only(request: Request, call_next):
+    if _hostname(request.headers.get("host", "")) not in ALLOWED_HOSTS:
+        return JSONResponse({"error": "Forbidden host."}, status_code=403)
+    # A cross-site form POST carries no JSON, but endpoints with no body
+    # (clear, cancel, install-fpcalc) would still run. Browsers always send
+    # Origin on such requests, so refuse any that come from another site.
+    if request.method not in _SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin and (origin == "null"
+                       or _hostname(urlsplit(origin).netloc) not in ALLOWED_HOSTS):
+            return JSONResponse({"error": "Cross-site request refused."}, status_code=403)
+    return await call_next(request)
 
 
 # ===========================================================================
@@ -470,8 +509,9 @@ def api_export_commit(req: ExportCommitRequest) -> dict[str, Any]:
             items, cfg,
             progress=lambda done, total, name: job.progress(done, total, name),
         )
-        moved = [i["path"] for i in items if i.get("action") != "skip"]
-        state.remove(moved)
+        # Only forget what actually left: a failed or skipped item is still
+        # sitting in the ingest folder and must stay visible in the app.
+        state.remove(report.exported_paths)
         job.log(f"Exported {report.exported}, replaced {report.replaced}, "
                 f"skipped {report.skipped}, failed {report.failed}")
         return report.to_dict()

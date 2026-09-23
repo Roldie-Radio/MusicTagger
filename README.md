@@ -248,10 +248,17 @@ recordings, loud ones, and every spectral tilt in between.
 - **Every write is journalled** with the previous tag values. Settings → History
   lists every batch with an Undo button; undo restores the old tags and moves
   files back where they came from.
+- **Undo takes back what Apply added.** A tag Apply wrote into a field that was
+  blank before is removed again on undo, not left behind; tags Apply never
+  touched are left exactly as they were.
 - **Undo never deletes.** If you organised in *copy* mode, undo reports the
   copies it made rather than removing files.
 - **Preview first.** The Preview button shows every planned tag write and file
   move without touching anything.
+- **Only this app can drive the local server.** It answers only requests
+  addressed to `127.0.0.1`/`localhost` and refuses state-changing requests from
+  other websites, so a page open in your browser cannot reach your files
+  through it.
 - Nothing leaves your machine except metadata queries to MusicBrainz/AcoustID
   and cover art downloads.
 

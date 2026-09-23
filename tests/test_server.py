@@ -41,7 +41,9 @@ def client(tmp_path, monkeypatch):
     # Persisting would write to the shared sqlite store; not what we are testing.
     monkeypatch.setattr(state, "persist", lambda tracks=None: None)
 
-    with TestClient(server.app) as test_client:
+    # The real UI reaches the server as 127.0.0.1; TestClient defaults to
+    # "testserver", which the local-only guard rightly refuses.
+    with TestClient(server.app, base_url="http://127.0.0.1") as test_client:
         test_client.state = state
         test_client.config = config
         yield test_client
@@ -711,3 +713,47 @@ class TestExportToPlex:
         assert status["result"]["skipped"] == 1
         assert Path(track.path).exists()
         assert client.state.get(track.path) is not None
+
+    def test_failed_commit_keeps_the_track_tracked(self, client, tmp_path):
+        """A file that did not move is still in the ingest folder - keep showing it."""
+        track = make_ready_file(tmp_path / "in" / "a.wav", title="Glory Box", artist="Portishead")
+        client.state.add([track])
+        blocker = Path(client.config.organize_root) / "Portishead"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_text("a file where the artist folder should go")
+        dest = str(blocker / "01 - Glory Box.wav")
+
+        job = client.post("/api/export/commit", json={
+            "items": [{"path": track.path, "dest": dest, "action": "export"}],
+        }).json()
+        status = wait_for_job(client, job["id"])
+        assert status["result"]["failed"] == 1
+        assert Path(track.path).exists()
+        assert client.state.get(track.path) is not None
+
+
+class TestLocalOnlyGuard:
+    """Another website must not be able to drive this server (DNS rebinding, CSRF)."""
+
+    def test_foreign_host_is_refused(self, client):
+        response = client.get("/api/status", headers={"host": "attacker.example:8731"})
+        assert response.status_code == 403
+
+    def test_foreign_host_cannot_change_settings(self, client):
+        response = client.post("/api/config", json={"ffmpeg_path": "/tmp/evil"},
+                               headers={"host": "attacker.example:8731"})
+        assert response.status_code == 403
+        assert client.config.ffmpeg_path != "/tmp/evil"
+
+    @pytest.mark.parametrize("host", ["127.0.0.1:8731", "localhost:8731", "127.0.0.1"])
+    def test_local_hosts_are_allowed(self, client, host):
+        assert client.get("/api/status", headers={"host": host}).status_code == 200
+
+    @pytest.mark.parametrize("origin", ["https://attacker.example", "null"])
+    def test_cross_site_post_is_refused(self, client, origin):
+        response = client.post("/api/clear", headers={"origin": origin})
+        assert response.status_code == 403
+
+    def test_same_origin_post_is_allowed(self, client):
+        response = client.post("/api/clear", headers={"origin": "http://127.0.0.1:8731"})
+        assert response.status_code == 200

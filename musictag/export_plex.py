@@ -121,6 +121,9 @@ class ExportReport:
     skipped: int = 0
     failed: int = 0
     errors: list[dict[str, str]] = field(default_factory=list)
+    #: Source paths that were actually moved out - not serialised, the
+    #: server uses it to drop exactly those tracks from its state.
+    exported_paths: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,6 +180,7 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
             shutil.move(str(source), str(dest_path))
             journal.record(report.batch_id, "move", str(source), dest=str(dest_path))
             report.exported += 1
+            report.exported_paths.append(path)
         except Exception as exc:  # noqa: BLE001 - one bad file must not abort the batch
             log.exception("Export failed for %s", path)
             report.failed += 1

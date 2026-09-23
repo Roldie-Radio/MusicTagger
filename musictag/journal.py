@@ -22,6 +22,9 @@ from .config import JOURNAL_DB
 from .models import TrackTags
 from .tags import write_file
 
+#: Key inside a "tags" entry's ``prev_tags`` JSON listing the fields Apply set.
+WRITTEN_KEY = "_written"
+
 
 @dataclass
 class UndoResult:
@@ -91,13 +94,26 @@ class Journal:
 
     def record(self, batch_id: str, op: str, src: str, *, dest: Optional[str] = None,
                prev_tags: Optional[TrackTags] = None, ok: bool = True,
-               error: Optional[str] = None) -> None:
+               error: Optional[str] = None,
+               written: Optional[list[str]] = None) -> None:
+        """Log one step. ``written`` lists the tag fields a "tags" op sets.
+
+        It rides inside the ``prev_tags`` JSON (``TrackTags.from_dict``
+        ignores unknown keys) so journals from older versions stay readable
+        without a schema change.
+        """
         conn = self._conn()
+        snapshot = None
+        if prev_tags:
+            data = prev_tags.to_dict()
+            if written is not None:
+                data[WRITTEN_KEY] = list(written)
+            snapshot = json.dumps(data)
         conn.execute(
             "INSERT INTO entries (batch_id, ts, op, src, dest, prev_tags, ok, error)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (batch_id, time.time(), op, src, dest,
-             json.dumps(prev_tags.to_dict()) if prev_tags else None,
+             snapshot,
              1 if ok else 0, error),
         )
         conn.commit()
@@ -153,8 +169,13 @@ class Journal:
                         # It may have been moved in the same batch and just restored.
                         result.skipped += 1
                         continue
-                    prev = TrackTags.from_dict(json.loads(entry["prev_tags"]))
-                    write_file(target, prev, id3v2_version=id3v2_version)
+                    data = json.loads(entry["prev_tags"])
+                    prev = TrackTags.from_dict(data)
+                    # Fields Apply wrote that were blank before get removed,
+                    # not left behind. Entries from before this was recorded
+                    # carry no list, so they keep the old overwrite-only undo.
+                    write_file(target, prev, id3v2_version=id3v2_version,
+                               clear=frozenset(data.get(WRITTEN_KEY) or ()))
                     result.restored += 1
                 elif op == "cover" and dest:
                     result.skipped += 1

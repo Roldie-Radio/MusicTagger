@@ -240,6 +240,30 @@ class TestUndo:
         assert all(c.exists() for c in copies)
         assert any("copy" in m.lower() for m in result.messages)
 
+    def test_undo_removes_tags_apply_added(self, library, cfg, journal):
+        """Fields that were blank before Apply must be blank again after undo."""
+        album, files = library
+        report = Applier(cfg).apply(build_tracks(files), ApplyOptions())
+        journal.undo(report.batch_id)
+
+        tags, _ = read_file(files[0])
+        assert tags.title == "Old Title 1"
+        assert tags.album is None
+        assert tags.album_artist is None
+        assert tags.track_no is None
+        assert tags.date is None
+
+    def test_undo_keeps_tags_apply_did_not_touch(self, library, cfg, journal):
+        album, files = library
+        write_file(files[0], TrackTags(title="Old Title 1", artist="Old Artist", genre="Trip hop"))
+        tracks = build_tracks(files)
+        assert tracks[0].match.proposed.genre is None
+        report = Applier(cfg).apply(tracks, ApplyOptions())
+        journal.undo(report.batch_id)
+
+        tags, _ = read_file(files[0])
+        assert tags.genre == "Trip hop"
+
     def test_undo_is_reported_not_silent(self, library, cfg, journal):
         album, files = library
         report = Applier(cfg).apply(build_tracks(files), ApplyOptions())
@@ -274,3 +298,36 @@ class TestJournal:
         removed = journal.prune(keep=2)
         assert removed == 3
         assert len(journal.list_batches()) == 2
+
+
+@ffmpeg_required
+@pytest.mark.parametrize("ext, codec", [
+    ("flac", ["-codec:a", "flac"]),
+    ("m4a", ["-codec:a", "aac", "-b:a", "128k"]),
+    ("ogg", ["-codec:a", "libvorbis"]),
+    ("opus", ["-codec:a", "libopus"]),
+])
+def test_undo_removes_added_tags_in_every_format(tmp_path, clean_wav, cfg, journal, ext, codec):
+    path = encode(clean_wav, tmp_path / f"song.{ext}", *codec)
+    write_file(path, TrackTags(title="Old", artist="Old Artist"))
+    track = Track(path=str(path), filename=path.name)
+    track.current, track.props = read_file(path)
+    track.match = MatchResult(confidence=95.0, proposed=proposed_for(1),
+                              candidates=[], method="test")
+    cfg.write_musicbrainz_ids = True
+    track.match.proposed.mb_release_id = "0000-release"
+
+    report = Applier(cfg).apply([track], ApplyOptions())
+    applied, _ = read_file(path)
+    assert applied.album == "Dummy" and applied.mb_release_id == "0000-release"
+
+    journal.undo(report.batch_id)
+    tags, _ = read_file(path)
+    assert (tags.title, tags.artist) == ("Old", "Old Artist")
+    assert tags.album is None
+    assert tags.album_artist is None
+    assert tags.track_no is None
+    assert tags.disc_no is None
+    assert tags.date is None
+    assert tags.mb_release_id is None
+    assert not tags.compilation
