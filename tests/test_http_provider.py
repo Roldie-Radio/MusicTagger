@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from musictag.cache import SqliteKV
-from musictag.providers.http import HttpClient, ProviderError
+from musictag.providers.http import HttpClient, ProviderError, retry_after_seconds
 
 
 class FakeResponse:
@@ -173,3 +173,45 @@ class TestSharedRateLimiter:
         assert again.min_interval == 2.0
         assert again._last == marked, \
             "rebuilding on a settings change would hand out a free request"
+
+
+class TestTransientServerErrors:
+    """A busy server's 5xx is worth a retry, not an instant failed lookup."""
+
+    @pytest.mark.parametrize("status", [500, 502, 504])
+    def test_a_5xx_is_retried(self, client, monkeypatch, status):
+        fast_sleep(monkeypatch)
+        get = MagicMock(side_effect=[FakeResponse(status), FakeResponse(200, {"ok": 1})])
+        monkeypatch.setattr(client.session, "get", get)
+        assert client.get_json("https://example.test/x") == {"ok": 1}
+        assert get.call_count == 2
+
+    def test_a_persistent_5xx_is_a_provider_error_and_not_cached(self, client, monkeypatch):
+        fast_sleep(monkeypatch)
+        monkeypatch.setattr(client.session, "get", MagicMock(return_value=FakeResponse(502)))
+        with pytest.raises(ProviderError):
+            client.get_json("https://example.test/y", retries=3)
+        assert client.cache.count() == 0
+
+    def test_a_date_retry_after_does_not_crash(self, client, monkeypatch):
+        fast_sleep(monkeypatch)
+        busy = FakeResponse(503, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        get = MagicMock(side_effect=[busy, FakeResponse(200, {"ok": 1})])
+        monkeypatch.setattr(client.session, "get", get)
+        assert client.get_json("https://example.test/z") == {"ok": 1}
+
+
+class TestRetryAfter:
+    def test_seconds(self):
+        assert retry_after_seconds("7", 1.0) == 7.0
+
+    def test_http_date_in_the_future(self):
+        from email.utils import formatdate
+        import time
+        wait = retry_after_seconds(formatdate(time.time() + 20, usegmt=True), 1.0)
+        assert 15 <= wait <= 21
+
+    def test_past_date_or_garbage_falls_back(self):
+        assert retry_after_seconds("Wed, 21 Oct 2015 07:28:00 GMT", 2.0) == 2.0
+        assert retry_after_seconds("soon", 2.0) == 2.0
+        assert retry_after_seconds(None, 2.0) == 2.0

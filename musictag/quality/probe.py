@@ -81,8 +81,12 @@ def ffprobe_info(path: Path, cfg: Config) -> dict[str, Any]:
 
 
 def decode_samples(path: Path, cfg: Config, *, max_seconds: int = 0,
+                   from_end_s: int = 0,
                    max_channels: int = 2) -> tuple[np.ndarray, int]:
     """Decode to float32 PCM at the file's native sample rate.
+
+    ``max_seconds`` stops after that much audio; ``from_end_s`` instead
+    decodes only the last that-many seconds (ffmpeg's ``-sseof``).
 
     Returns ``(samples, sample_rate)`` where ``samples`` has shape
     ``(n_frames, n_channels)``. The native rate is preserved deliberately:
@@ -98,6 +102,8 @@ def decode_samples(path: Path, cfg: Config, *, max_seconds: int = 0,
     channels = min(info["channels"] or 1, max_channels) or 1
 
     cmd = [ffmpeg, "-v", "error", "-nostdin"]
+    if from_end_s and from_end_s > 0:
+        cmd += ["-sseof", f"-{int(from_end_s)}"]
     if max_seconds and max_seconds > 0:
         cmd += ["-t", str(int(max_seconds))]
     cmd += [

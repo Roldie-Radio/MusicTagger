@@ -342,7 +342,8 @@ def api_identify(req: SelectionRequest) -> dict[str, Any]:
                     completed += 1
                     job.progress(completed, len(tracks), Path(path).name)
 
-            matcher.identify_album(items, progress=on_track)
+            matcher.identify_album(items, progress=on_track,
+                                   cancelled=lambda: job.cancelled)
             # Save each album as it finishes: a crash or a closed window an
             # hour into a big library should cost one album, not the run.
             state.persist(items)

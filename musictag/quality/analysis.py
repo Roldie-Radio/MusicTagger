@@ -95,6 +95,18 @@ DROPOUT_HIGH_S = 10.0
 ABRUPT_END_DB = -10.0
 ABRUPT_START_DB = -15.0        # same idea, for a track starting already loud
 
+#: Decoding keeps the whole file in memory as float32 - about 21 MB a minute
+#: for 44.1 kHz stereo, before any working copies - and several files are
+#: analysed at once. That is nothing for a song and ruinous for a two-hour
+#: DJ mix or a ten-hour audiobook (over 12 GB). Past this length a file is
+#: *sampled* instead: the opening SAMPLE_HEAD_S seconds for everything that
+#: works as a rate or a share (clipping, clicks, spectrum, levels, dropouts),
+#: plus the final SAMPLE_TAIL_S seconds, decoded separately, for the checks
+#: that are about the real ending of the file.
+LONG_FILE_S = 15 * 60
+SAMPLE_HEAD_S = 8 * 60
+SAMPLE_TAIL_S = 30
+
 
 # ===========================================================================
 # Public entry points
@@ -148,8 +160,11 @@ def analyze_file(path: Path, cfg: Config, *,
     _check_container(report, info, codec, lossless, bitrate_kbps)
 
     # --- decode and measure ---------------------------------------------
+    # A user-set cap wins; otherwise long files are sampled (see LONG_FILE_S).
+    sampled = not cfg.quality_max_seconds and (info["duration"] or 0) > LONG_FILE_S
+    max_seconds = cfg.quality_max_seconds or (SAMPLE_HEAD_S if sampled else 0)
     try:
-        samples, sample_rate = decode_samples(path, cfg, max_seconds=cfg.quality_max_seconds)
+        samples, sample_rate = decode_samples(path, cfg, max_seconds=max_seconds)
     except FfmpegUnavailable as exc:
         report.error = str(exc)
         report.analysed = True
@@ -163,15 +178,25 @@ def analyze_file(path: Path, cfg: Config, *,
         report.score = _score(report)
         return report
 
-    mono = samples.mean(axis=1) if samples.ndim > 1 and samples.shape[1] > 1 else samples.reshape(-1)
+    mono = _mono(samples)
     duration = len(mono) / sample_rate
     report.metrics["analysed_seconds"] = round(duration, 2)
+    report.metrics["sampled"] = sampled
+
+    tail: Optional[np.ndarray] = None
+    if sampled:
+        try:
+            tail = _mono(decode_samples(path, cfg, from_end_s=SAMPLE_TAIL_S)[0])
+        except (DecodeError, FfmpegUnavailable) as exc:
+            # The body was analysed fine; only the end checks are lost.
+            log.debug("Could not decode the end of %s: %s", path, exc)
 
     _check_levels(report, samples, mono)
     _check_clipping(report, samples)
     _check_clicks(report, mono, sample_rate)
-    _check_silence_and_dropouts(report, mono, sample_rate)
-    _check_truncation(report, mono, sample_rate, info["duration"], reference_duration_s, cfg)
+    _check_silence_and_dropouts(report, mono, sample_rate, sampled=sampled, tail=tail)
+    _check_truncation(report, mono, sample_rate, info["duration"], reference_duration_s, cfg,
+                      sampled=sampled, tail=tail)
     _check_spectrum(report, mono, sample_rate, codec, lossless, bitrate_kbps)
     _check_channels(report, samples)
 
@@ -183,6 +208,18 @@ def analyze_file(path: Path, cfg: Config, *,
 # ===========================================================================
 # Individual checks
 # ===========================================================================
+
+def _mono(samples: np.ndarray) -> np.ndarray:
+    return samples.mean(axis=1) if samples.ndim > 1 and samples.shape[1] > 1 else samples.reshape(-1)
+
+
+def _quiet_frames(mono: np.ndarray, sample_rate: int) -> tuple[np.ndarray, int]:
+    """Which 20 ms frames are below the silence floor, and the frame size."""
+    win = max(1, int(0.02 * sample_rate))
+    frames = mono[: (mono.size // win) * win].reshape(-1, win)
+    frame_rms = np.sqrt(np.mean(np.square(frames), axis=1))
+    return frame_rms < _from_db(SILENCE_DB), win
+
 
 def _check_container(report: QualityReport, info: dict[str, Any], codec: str,
                      lossless: bool, bitrate: int) -> None:
@@ -392,25 +429,42 @@ def _check_clicks(report: QualityReport, mono: np.ndarray, sample_rate: int) -> 
             "mastered music and rarely audible as damage."))
 
 
-def _check_silence_and_dropouts(report: QualityReport, mono: np.ndarray, sample_rate: int) -> None:
+def _check_silence_and_dropouts(report: QualityReport, mono: np.ndarray, sample_rate: int,
+                                *, sampled: bool = False,
+                                tail: Optional[np.ndarray] = None) -> None:
+    """Silent lead-in/tail, and gaps inside the track.
+
+    When the file is ``sampled``, ``mono`` stops somewhere mid-file, so its
+    end says nothing about the file's end: trailing silence is measured on
+    ``tail`` (the real last seconds) instead, or not at all without one.
+    """
     if mono.size < sample_rate:
         return
-    win = max(1, int(0.02 * sample_rate))                    # 20 ms frames
-    frames = mono[: (mono.size // win) * win].reshape(-1, win)
-    frame_rms = np.sqrt(np.mean(np.square(frames), axis=1))
-    quiet = frame_rms < _from_db(SILENCE_DB)
+    quiet, win = _quiet_frames(mono, sample_rate)
 
     lead = int(np.argmax(~quiet)) if (~quiet).any() else len(quiet)
-    trail = int(np.argmax(~quiet[::-1])) if (~quiet).any() else 0
-    lead_s, trail_s = lead * win / sample_rate, trail * win / sample_rate
+    if sampled:
+        trail = 0                         # the head ends mid-file, not at its end
+    else:
+        trail = int(np.argmax(~quiet[::-1])) if (~quiet).any() else 0
+    lead_s = lead * win / sample_rate
+    trail_s: Optional[float] = trail * win / sample_rate
+    if sampled:
+        trail_s = None
+        if tail is not None and tail.size >= sample_rate:
+            tail_quiet, _ = _quiet_frames(tail, sample_rate)
+            tail_trail = (int(np.argmax(~tail_quiet[::-1])) if (~tail_quiet).any()
+                          else len(tail_quiet))
+            trail_s = tail_trail * win / sample_rate
     report.metrics["leading_silence_s"] = round(lead_s, 2)
-    report.metrics["trailing_silence_s"] = round(trail_s, 2)
+    if trail_s is not None:
+        report.metrics["trailing_silence_s"] = round(trail_s, 2)
 
     if lead_s > 3.0:
         report.issues.append(QualityIssue(
             "leading_silence", "low", f"{lead_s:.1f}s of silence at the start",
             "A long silent lead-in usually means a badly split track."))
-    if trail_s > 10.0:
+    if trail_s is not None and trail_s > 10.0:
         report.issues.append(QualityIssue(
             "trailing_silence", "low", f"{trail_s:.1f}s of silence at the end",
             "A long silent tail wastes space and creates an awkward gap in playback."))
@@ -437,7 +491,8 @@ def _check_silence_and_dropouts(report: QualityReport, mono: np.ndarray, sample_
 
 def _check_truncation(report: QualityReport, mono: np.ndarray, sample_rate: int,
                       container_duration: float, reference_duration_s: Optional[float],
-                      cfg: Config) -> None:
+                      cfg: Config, *, sampled: bool = False,
+                      tail: Optional[np.ndarray] = None) -> None:
     """Detect songs that stop before they finish.
 
     Two independent tests, because either alone produces false positives:
@@ -447,16 +502,21 @@ def _check_truncation(report: QualityReport, mono: np.ndarray, sample_rate: int,
     """
     if mono.size < sample_rate:
         return
-    # Only meaningful when we decoded the whole thing.
+    # Only meaningful when we decoded the whole thing - or, for a sampled
+    # long file, when its real last seconds were decoded separately.
     partial = bool(cfg.quality_max_seconds and container_duration > cfg.quality_max_seconds)
+    ending = mono
+    if sampled:
+        ending = tail if tail is not None and tail.size >= sample_rate else None
 
-    if not partial:
+    if not partial and ending is not None:
         tail_n = int(0.05 * sample_rate)
-        end_rms = float(np.sqrt(np.mean(np.square(mono[-tail_n:]))))
+        end_rms = float(np.sqrt(np.mean(np.square(ending[-tail_n:]))))
         end_db = _db(end_rms)
         # Compare the last 50 ms against the half-second before it: real endings decay.
         prev_n = int(0.5 * sample_rate)
-        prev_rms = float(np.sqrt(np.mean(np.square(mono[-prev_n:-tail_n])))) if mono.size > prev_n else end_rms
+        prev_rms = (float(np.sqrt(np.mean(np.square(ending[-prev_n:-tail_n]))))
+                    if ending.size > prev_n else end_rms)
         decay_db = _db(prev_rms) - end_db
         report.metrics["end_level_dbfs"] = round(end_db, 2)
         report.metrics["end_decay_db"] = round(decay_db, 2)
@@ -469,6 +529,7 @@ def _check_truncation(report: QualityReport, mono: np.ndarray, sample_rate: int,
                 "note or chord instead of fading out is also a completely normal "
                 "mixing choice, so treat this as worth a listen, not a verdict."))
 
+    if not partial:
         start_n = int(0.05 * sample_rate)
         start_db = _db(float(np.sqrt(np.mean(np.square(mono[:start_n])))))
         report.metrics["start_level_dbfs"] = round(start_db, 2)

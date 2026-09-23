@@ -89,7 +89,7 @@ jobs:
           Get-ChildItem $tools
 
       # --- gate the release on the suite -----------------------------------
-      # ffmpeg is on PATH by the step above, so the 136 tests that skip
+      # ffmpeg is on PATH by the step above, so the 140 tests that skip
       # without it run here as well as in tests.yml, so a release is never
       # built from code the full suite has not passed on.
       - name: Run tests
