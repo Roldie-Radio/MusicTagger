@@ -55,7 +55,7 @@ class Journal:
             " id INTEGER PRIMARY KEY AUTOINCREMENT,"
             " batch_id TEXT NOT NULL,"
             " ts REAL NOT NULL,"
-            " op TEXT NOT NULL,"          # tags | move | copy | cover
+            " op TEXT NOT NULL,"          # tags | move | copy | cover | convert
             " src TEXT NOT NULL,"
             " dest TEXT,"
             " prev_tags TEXT,"
@@ -231,6 +231,12 @@ class Journal:
                     write_file(target, prev, id3v2_version=id3v2_version,
                                clear=frozenset(data.get(WRITTEN_KEY) or ()))
                     result.restored += 1
+                elif op == "convert" and dest:
+                    # Same rule as copies: the original was never touched, and
+                    # deleting the converted file is not ours to decide.
+                    result.skipped += 1
+                    result.messages.append(
+                        f"Converted file left in place (delete manually if unwanted): {dest}")
                 elif op == "cover" and dest:
                     result.skipped += 1
                     result.messages.append(f"Cover file left in place: {dest}")

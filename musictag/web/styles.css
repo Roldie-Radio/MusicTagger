@@ -1290,3 +1290,20 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 /* The whole row opens its details. */
 .track-row { cursor: pointer; }
 .track-row input, .track-row .cell-check { cursor: default; }
+
+/* Convert, in the selection bar. */
+.action-divider { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+.convert-pick select {
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}

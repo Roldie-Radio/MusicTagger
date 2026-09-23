@@ -959,3 +959,29 @@ def test_builtin_key_reads_the_generated_file_and_the_environment(monkeypatch):
     assert real() == "fromfile"
     monkeypatch.setenv("MUSICTAGGER_ACOUSTID_KEY", "fromenv")
     assert real() == "fromenv"
+
+
+@ffmpeg_required
+class TestConvert:
+    def test_convert_adds_the_new_file_to_the_list(self, client, tmp_path, monkeypatch):
+        from musictag.journal import Journal
+        journal = Journal(tmp_path / "journal.db")
+        monkeypatch.setattr("musictag.convert.get_journal", lambda: journal)
+        track = make_ready_file(tmp_path / "in" / "a.wav", title="Glory Box", artist="Portishead")
+        client.state.add([track])
+
+        job = client.post("/api/convert", json={"paths": [track.path], "format": "mp3"}).json()
+        status = wait_for_job(client, job["id"])
+        assert status["status"] == "done", status.get("error")
+        assert status["result"]["converted"] == 1
+        new_path = str(tmp_path / "in" / "a.mp3")
+        assert client.state.get(new_path) is not None
+        assert client.state.get(track.path) is not None, "the original stays listed"
+
+    def test_unknown_format_is_refused(self, client):
+        response = client.post("/api/convert", json={"paths": ["x"], "format": "ogg"})
+        assert response.status_code == 400
+
+    def test_nothing_selected_is_refused(self, client):
+        response = client.post("/api/convert", json={"paths": [], "format": "mp3"})
+        assert response.status_code == 400

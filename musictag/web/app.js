@@ -1880,6 +1880,26 @@ function wire() {
     if (state.activeJobId) api(`/api/jobs/${state.activeJobId}/cancel`, { method: 'POST' });
   });
 
+  // convert
+  $('#btnConvert').addEventListener('click', () => {
+    const paths = selectedPaths();
+    if (!paths.length) return;
+    const select = $('#convertFormat');
+    const label = select.options[select.selectedIndex].text;
+    if (!confirm(`Convert ${paths.length} file(s) to ${label}?\n\n`
+      + 'Each converted copy is saved next to its original, with the same tags and '
+      + 'cover art. Originals are not changed or deleted. Files already in this '
+      + 'format are skipped.\n\nConverting from one lossy format to another '
+      + '(for example MP3 to M4A) loses a little quality; converting never adds '
+      + 'quality that was not there.')) return;
+    startJob('/api/convert', { paths, format: select.value }, (job) => {
+      const result = job.result || {};
+      if (result.failed && result.errors?.length) {
+        toast(`${result.failed} file(s) could not be converted: ${result.errors[0].error}`, 'error');
+      }
+    });
+  });
+
   // apply
   $('#btnApply').addEventListener('click', () =>
     applyTracks(selectedPaths(), $('#optOrganize').checked, false));

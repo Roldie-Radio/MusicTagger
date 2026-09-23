@@ -132,6 +132,16 @@
   </label>
   <button class="btn btn-ghost" id="btnPreview">Preview changes</button>
   <button class="btn btn-primary" id="btnApply">Apply to files</button>
+  <span class="action-divider" aria-hidden="true"></span>
+  <label class="convert-pick">
+    <span class="sr-only">Convert to</span>
+    <select id="convertFormat" title="Format to convert the selected tracks to">
+      <option value="mp3">MP3 320 kbps</option>
+      <option value="m4a">M4A (AAC 256 kbps)</option>
+      <option value="wma">WMA (192 kbps)</option>
+    </select>
+  </label>
+  <button class="btn" id="btnConvert" title="Make a copy of each selected track in this format">Convert</button>
 </div>
 
 <!-- ======================== Folder picker ========================= -->

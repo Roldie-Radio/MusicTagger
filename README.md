@@ -257,6 +257,25 @@ recordings, loud ones, and every spectral tilt in between.
 
 ---
 
+## Converting
+
+Select tracks, pick a format in the selection bar and click **Convert**:
+
+| Format | Encoding |
+|---|---|
+| MP3 320 kbps | LAME, constant 320 kbps |
+| M4A | AAC, 256 kbps |
+| WMA | WMA v2, 192 kbps |
+
+Each converted copy is saved **next to its original** with the same tags and
+cover art (WMA gets tags only), and appears in the list straight away.
+Originals are never changed or deleted, an existing file is never
+overwritten (the copy is named `track (2).mp3` instead), and files already in
+the chosen format are skipped. Converting one lossy format to another loses a
+little quality, and no conversion adds quality that was not in the source.
+Conversions show up in History; undo leaves the converted files in place for
+you to delete if you want.
+
 ## Safety
 
 - **Nothing is written until you click Apply.** Scan and identify are read-only.
@@ -343,6 +362,7 @@ musictag/
   config.py        settings, tool discovery
   library.py       filesystem scanning
   tags.py          per-format read/write (the Plex compatibility layer)
+  convert.py       MP3 320 / M4A / WMA conversion via ffmpeg
   fingerprint.py   Chromaprint + AcoustID
   providers/       MusicBrainz, Cover Art Archive, shared HTTP with rate limiting
   matching.py      candidate generation, scoring, confidence
