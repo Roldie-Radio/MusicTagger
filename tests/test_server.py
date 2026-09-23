@@ -329,6 +329,40 @@ class TestJobs:
 
         assert seen_midway, "progress must tick up mid-batch, not jump straight from 0 to done"
 
+    def test_identify_saves_each_album_as_it_finishes(self, client, monkeypatch):
+        """A crash an hour in should cost one album, not the whole run."""
+        from musictag import matching
+
+        for folder in ("A", "B", "C"):
+            for i in range(2):
+                add_track(client.state, f"C:/Music/{folder}/{i:02d}.mp3")
+        saved: list[list[str]] = []
+        monkeypatch.setattr(client.state, "persist",
+                            lambda tracks=None: saved.append([t.path for t in tracks]))
+        monkeypatch.setattr(matching.Matcher, "identify_album",
+                            lambda self, items, progress=None: None)
+
+        job = client.post("/api/identify", json={"paths": [], "only_pending": False}).json()
+        assert wait_for_job(client, job["id"])["status"] == "done"
+        assert sorted(len(batch) for batch in saved) == [2, 2, 2]
+
+    def test_quality_counts_every_file_with_parallel_workers(self, client, monkeypatch):
+        from musictag.models import QualityReport
+
+        for i in range(40):
+            add_track(client.state, f"C:/Music/Q/{i:02d}.mp3")
+        client.config.ffmpeg_path = "ffmpeg"
+        client.config.quality_workers = 8
+        monkeypatch.setattr(type(client.config), "ffmpeg", property(lambda self: "ffmpeg"))
+        monkeypatch.setattr(server, "analyze_track",
+                            lambda track, cfg: QualityReport(analysed=True))
+
+        job = client.post("/api/quality", json={"paths": [], "only_pending": False}).json()
+        status = wait_for_job(client, job["id"])
+        assert status["status"] == "done", status.get("error")
+        assert status["result"]["analysed"] == 40
+        assert status["done"] == 40
+
     def test_apply_with_nothing_identified_is_rejected(self, client):
         response = client.post("/api/apply", json={"paths": []})
         assert response.status_code == 400

@@ -67,8 +67,10 @@ def _written_fields(tags: TrackTags, *, art: bool, mb_ids: bool) -> list[str]:
     """Which fields a write of ``tags`` actually sets - what undo may clear.
 
     Mirrors the writers in :mod:`musictag.tags`: an empty field is left
-    alone, the compilation flag is always written, and art only when some
-    was embedded.
+    alone, and art only counts when some was embedded. The compilation flag
+    is listed whatever its value, because a writer may correct a stale "1"
+    to "0"; undo then restores the snapshot's flag, removing it if it was
+    not set.
     """
     written = [f.name for f in fields(TrackTags)
                if f.name not in ("compilation", "has_art", "year")
@@ -175,12 +177,12 @@ class Applier:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest = unique_path(dest)
             if self.cfg.organize_mode == "copy":
-                shutil.copy2(source, dest)
-                journal.record(report.batch_id, "copy", str(source), dest=str(dest))
+                with journal.step(report.batch_id, "copy", str(source), dest=str(dest)):
+                    shutil.copy2(source, dest)
                 report.copied += 1
             else:
-                shutil.move(str(source), str(dest))
-                journal.record(report.batch_id, "move", str(source), dest=str(dest))
+                with journal.step(report.batch_id, "move", str(source), dest=str(dest)):
+                    shutil.move(str(source), str(dest))
                 report.moved += 1
                 track.path = str(dest)
                 track.filename = dest.name

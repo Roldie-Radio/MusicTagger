@@ -16,7 +16,10 @@ from pathlib import Path
 
 # Point the app at a throwaway home *before* importing anything that reads it,
 # so running the suite can never touch the real config, cache or journal.
-os.environ["MUSICTAGGER_HOME"] = str(Path(tempfile.gettempdir()) / "musictagger-tests")
+# A fresh directory per run, not a fixed one: a fixed path carries the last
+# run's cache and state into this one, and tests that expect to start empty
+# then pass or fail depending on what ran before.
+os.environ["MUSICTAGGER_HOME"] = tempfile.mkdtemp(prefix="musictagger-tests-")
 
 import numpy as np                                                  # noqa: E402
 import pytest                                                       # noqa: E402

@@ -343,12 +343,13 @@ def api_identify(req: SelectionRequest) -> dict[str, Any]:
                     job.progress(completed, len(tracks), Path(path).name)
 
             matcher.identify_album(items, progress=on_track)
+            # Save each album as it finishes: a crash or a closed window an
+            # hour into a big library should cost one album, not the run.
+            state.persist(items)
 
         workers = max(1, min(cfg.identify_workers, len(groups)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(do_group, groups.values()))
-
-        state.persist(tracks)
         identified = sum(1 for t in tracks if t.match and t.match.candidates)
         job.log(f"Identified {identified} of {len(tracks)} tracks")
         return {"identified": identified, "total": len(tracks)}
@@ -374,6 +375,7 @@ def api_quality(req: SelectionRequest) -> dict[str, Any]:
     def run(job: Job):
         job.total = len(tracks)
         done = 0
+        progress_lock = threading.Lock()
 
         def analyse(track: Track):
             nonlocal done
@@ -385,13 +387,17 @@ def api_quality(req: SelectionRequest) -> dict[str, Any]:
                 log.exception("Quality analysis failed for %s", track.path)
                 from .models import QualityReport
                 track.quality = QualityReport(analysed=False, error=str(exc))
-            done += 1
-            job.progress(done, len(tracks), track.filename)
+            # Decoding a file takes seconds, so saving each result as it lands
+            # costs nothing and means an interrupted run keeps its work.
+            state.persist([track])
+            # ``done += 1`` is a read-modify-write; unguarded, workers
+            # finishing together lose counts and the final tally comes up short.
+            with progress_lock:
+                done += 1
+                job.progress(done, len(tracks), track.filename)
 
         with ThreadPoolExecutor(max_workers=max(1, cfg.quality_workers)) as pool:
             list(pool.map(analyse, tracks))
-
-        state.persist(tracks)
         flagged = sum(1 for t in tracks if t.quality and t.quality.issues)
         job.log(f"Analysed {done} files, {flagged} with findings")
         return {"analysed": done, "flagged": flagged}

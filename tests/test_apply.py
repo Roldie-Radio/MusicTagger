@@ -7,6 +7,7 @@ a docstring.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -331,3 +332,41 @@ def test_undo_removes_added_tags_in_every_format(tmp_path, clean_wav, cfg, journ
     assert tags.date is None
     assert tags.mb_release_id is None
     assert not tags.compilation
+
+
+@ffmpeg_required
+def test_move_is_journalled_before_it_happens(library, cfg, journal, monkeypatch):
+    """A crash mid-move must still leave undo a record of where the file went."""
+    album, files = library
+    seen = []
+    real_move = shutil.move
+
+    def spying_move(src, dst):
+        batch = journal.list_batches()[0]["id"]
+        seen.append([e["op"] for e in journal.batch_entries(batch)])
+        return real_move(src, dst)
+
+    monkeypatch.setattr("musictag.apply.shutil.move", spying_move)
+    Applier(cfg).apply(build_tracks(files)[:1], ApplyOptions(organize=True))
+
+    assert seen and "move" in seen[0], "the move entry must exist before the move runs"
+
+
+@ffmpeg_required
+def test_failed_move_is_not_replayed_by_undo(library, cfg, journal, monkeypatch):
+    album, files = library
+
+    def broken_move(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("musictag.apply.shutil.move", broken_move)
+    report = Applier(cfg).apply(build_tracks(files)[:1], ApplyOptions(organize=True))
+    assert report.failed == 1
+
+    moves = [e for e in journal.batch_entries(report.batch_id) if e["op"] == "move"]
+    assert len(moves) == 1
+    assert moves[0]["ok"] == 0 and "disk full" in moves[0]["error"]
+
+    result = journal.undo(report.batch_id)
+    assert result.failed == 0
+    assert not any("move" in m.lower() for m in result.messages)

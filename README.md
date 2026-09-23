@@ -395,7 +395,11 @@ is known. The suite includes a false-positive baseline: a clean file must come
 back quiet, or the detectors are not worth having.
 
 Building those fixtures needs `ffmpeg` on your `PATH`. Without it they skip
-rather than fail, taking 118 of the 377 tests out of the run - so a green result
+rather than fail, taking 136 of the 451 tests out of the run - so a green result
 on a machine with no ffmpeg is a weaker signal than it looks.
 [`desktop/build-resources/tools/README.md`](desktop/build-resources/tools/README.md)
 has the download links.
+
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs the whole
+suite, ffmpeg included, on Linux and Windows for every pull request and every
+push to `main`.

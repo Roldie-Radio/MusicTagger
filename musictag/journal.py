@@ -95,8 +95,10 @@ class Journal:
     def record(self, batch_id: str, op: str, src: str, *, dest: Optional[str] = None,
                prev_tags: Optional[TrackTags] = None, ok: bool = True,
                error: Optional[str] = None,
-               written: Optional[list[str]] = None) -> None:
-        """Log one step. ``written`` lists the tag fields a "tags" op sets.
+               written: Optional[list[str]] = None) -> int:
+        """Log one step and return its entry id.
+
+        ``written`` lists the tag fields a "tags" op sets.
 
         It rides inside the ``prev_tags`` JSON (``TrackTags.from_dict``
         ignores unknown keys) so journals from older versions stay readable
@@ -109,7 +111,7 @@ class Journal:
             if written is not None:
                 data[WRITTEN_KEY] = list(written)
             snapshot = json.dumps(data)
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO entries (batch_id, ts, op, src, dest, prev_tags, ok, error)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (batch_id, time.time(), op, src, dest,
@@ -117,6 +119,25 @@ class Journal:
              1 if ok else 0, error),
         )
         conn.commit()
+        return cur.lastrowid
+
+    def fail(self, entry_id: int, error: str) -> None:
+        """Mark a step recorded up front as not having happened after all.
+
+        Filesystem steps are journalled *before* they run, so a crash midway
+        still leaves undo a record of a file that may have moved. When the
+        step raises instead, this takes it back out of what undo replays.
+        """
+        conn = self._conn()
+        conn.execute("UPDATE entries SET ok = 0, error = ? WHERE id = ?", (error, entry_id))
+        conn.commit()
+
+    def step(self, batch_id: str, op: str, src: str, *, dest: Optional[str] = None):
+        """Context manager: journal a file operation, then run it.
+
+        ``with journal.step(batch, "move", src, dest=dest): shutil.move(...)``
+        """
+        return _JournalledStep(self, batch_id, op, src, dest)
 
     # ------------------------------------------------------------------
     def list_batches(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -197,6 +218,23 @@ class Journal:
             conn.execute("DELETE FROM batches WHERE id = ?", (batch_id,))
         conn.commit()
         return len(ids)
+
+
+class _JournalledStep:
+    def __init__(self, journal: Journal, batch_id: str, op: str, src: str,
+                 dest: Optional[str]):
+        self.journal, self.args = journal, (batch_id, op, src)
+        self.dest = dest
+        self.entry_id: Optional[int] = None
+
+    def __enter__(self) -> "_JournalledStep":
+        self.entry_id = self.journal.record(*self.args, dest=self.dest)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc is not None and self.entry_id is not None:
+            self.journal.fail(self.entry_id, str(exc))
+        return False
 
 
 _journal: Journal | None = None

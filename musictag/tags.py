@@ -205,10 +205,15 @@ class ID3Adapter(BaseAdapter):
             id3.setall("TPOS", [TPOS(encoding=3, text=[value])])
         elif "disc_no" in clear:
             id3.delall("TPOS")
-        if "compilation" in clear and not tags.compilation:
+        # Only a real compilation gets the flag. A file that never had one is
+        # left without it, rather than gaining a "0" nobody asked for; one
+        # that wrongly says "1" is corrected.
+        if tags.compilation:
+            id3.setall("TCMP", [TCMP(encoding=3, text=["1"])])
+        elif "compilation" in clear:
             id3.delall("TCMP")
-        else:
-            id3.setall("TCMP", [TCMP(encoding=3, text=["1" if tags.compilation else "0"])])
+        elif id3.getall("TCMP"):
+            id3.setall("TCMP", [TCMP(encoding=3, text=["0"])])
 
         if write_mb_ids:
             def txxx(desc: str, field: str):
@@ -346,10 +351,14 @@ class VorbisAdapter(BaseAdapter):
         put("GENRE", "genre")
         put("COMPOSER", "composer")
         put("ISRC", "isrc")
-        if "compilation" in clear and not tags.compilation:
+        # Same rule as ID3: flag real compilations, correct a stale "1",
+        # otherwise leave the tag absent.
+        if tags.compilation:
+            tag["COMPILATION"] = ["1"]
+        elif "compilation" in clear:
             drop("COMPILATION")
-        else:
-            tag["COMPILATION"] = ["1" if tags.compilation else "0"]
+        elif "COMPILATION" in tag:
+            tag["COMPILATION"] = ["0"]
 
         if write_mb_ids:
             put("MUSICBRAINZ_TRACKID", "mb_recording_id")
@@ -483,10 +492,14 @@ class MP4Adapter(BaseAdapter):
             tag["disk"] = [(int(tags.disc_no), int(tags.disc_total or 0))]
         else:
             drop("disk", "disc_no")
-        if "compilation" in clear and not tags.compilation:
+        # Same rule as ID3: flag real compilations, correct a stale "1",
+        # otherwise leave the atom absent.
+        if tags.compilation:
+            tag["cpil"] = True
+        elif "compilation" in clear:
             drop("cpil", "compilation")
-        else:
-            tag["cpil"] = bool(tags.compilation)
+        elif "cpil" in tag:
+            tag["cpil"] = False
 
         for attr, key in self.FREEFORM.items():
             if attr.startswith("mb_") and not write_mb_ids:

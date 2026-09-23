@@ -173,8 +173,8 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
                 if existing.exists():
                     trash = unique_path((plex_root or dest_path.parent) / TRASH_DIRNAME / existing.name)
                     trash.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(existing), str(trash))
-                    journal.record(report.batch_id, "move", str(existing), dest=str(trash))
+                    with journal.step(report.batch_id, "move", str(existing), dest=str(trash)):
+                        shutil.move(str(existing), str(trash))
                     report.replaced += 1
             # Always, including after a replace: the trashed duplicate may
             # have been somewhere other than ``dest``, and moving onto an
@@ -184,8 +184,8 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
             dest_path = unique_path(dest_path)
 
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source), str(dest_path))
-            journal.record(report.batch_id, "move", str(source), dest=str(dest_path))
+            with journal.step(report.batch_id, "move", str(source), dest=str(dest_path)):
+                shutil.move(str(source), str(dest_path))
             report.exported += 1
             report.exported_paths.append(path)
         except Exception as exc:  # noqa: BLE001 - one bad file must not abort the batch

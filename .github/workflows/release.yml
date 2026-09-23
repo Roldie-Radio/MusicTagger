@@ -89,8 +89,9 @@ jobs:
           Get-ChildItem $tools
 
       # --- gate the release on the suite -----------------------------------
-      # ffmpeg is on PATH by the step above, so the 118 tests that skip
-      # without it run here. This is the only place they run automatically.
+      # ffmpeg is on PATH by the step above, so the 136 tests that skip
+      # without it run here as well as in tests.yml, so a release is never
+      # built from code the full suite has not passed on.
       - name: Run tests
         shell: pwsh
         run: |
