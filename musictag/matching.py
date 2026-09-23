@@ -22,7 +22,7 @@ import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from .config import Config
 from .fingerprint import AcoustIDClient, FingerprintUnavailable
@@ -222,7 +222,8 @@ class Matcher:
 
         return self._finish(track, observed, candidates, notes, methods)
 
-    def identify_album(self, tracks: list[Track], *, progress=None) -> None:
+    def identify_album(self, tracks: list[Track], *, progress=None,
+                       cancelled: Optional[Callable[[], bool]] = None) -> None:
         """Identify a folder of tracks, then make them agree with each other.
 
         Tracks matched independently often scatter across several releases of
@@ -236,12 +237,20 @@ class Matcher:
         decoding and fingerprinting, which are local and fast, could have been
         happening in the gaps. The rate limiters are process-wide, so this
         overlaps the waiting without ever raising the request rate.
+
+        ``cancelled`` is polled before each file. One folder can hold
+        thousands of files - a flat dump of downloads is a single group - so
+        checking only between folders left Cancel doing nothing for an hour.
+        Files not reached keep no match, and a cancelled folder is not
+        consolidated, since a partial vote is not the folder's answer.
         """
         done = 0
         lock = threading.Lock()
 
         def identify_one(track: Track) -> None:
             nonlocal done
+            if cancelled and cancelled():
+                return
             try:
                 track.match = self.identify(track)
                 track.status = "identified"
@@ -263,6 +272,8 @@ class Matcher:
                                     thread_name_prefix="identify") as pool:
                 list(pool.map(identify_one, tracks))
 
+        if cancelled and cancelled():
+            return
         self._consolidate_album(tracks)
 
     # ------------------------------------------------------------------
@@ -865,27 +876,13 @@ class Matcher:
         if release_tags_sample is None:
             return
 
-        used: set[int] = set()
-        realigned = 0
-        for track in matched:
-            best_i, best_score = None, 0.0
-            title = track.match.proposed.title or track.current.title or Path(track.path).stem
-            for i, entry in enumerate(tracklist):
-                if i in used:
-                    continue
-                score = similarity(title, entry["title"], drop_feat=True)
-                if entry.get("length_ms") and track.props.duration_s:
-                    delta = abs(entry["length_ms"] / 1000.0 - track.props.duration_s)
-                    score = score * 0.75 + (0.25 if delta <= 3 else 0.0)
-                if track.current.track_no and entry.get("track_no") == track.current.track_no:
-                    score += 0.15
-                if score > best_score:
-                    best_i, best_score = i, score
+        assignment = _seat_on_tracklist(matched, tracklist)
 
-            if best_i is None or best_score < 0.55:
+        realigned = 0
+        for index, track in enumerate(matched):
+            if index not in assignment:
                 continue
-            used.add(best_i)
-            entry = tracklist[best_i]
+            entry = tracklist[assignment[index]]
 
             proposed = track.match.proposed
             already_here = proposed.mb_release_id == release_id
@@ -928,6 +925,58 @@ class Matcher:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+#: Below this title similarity a file is never seated on a tracklist entry,
+#: however well its length and position line up. Unrelated song titles
+#: routinely score 0.2-0.45 ("Sour Times" vs "Strangers" is 0.42), and an
+#: album has plenty of tracks within 3s of each other - so without a floor a
+#: bonus track from another release would inherit a neighbour's recording ID.
+SEAT_TITLE_FLOOR = 0.6
+#: The combined score a seat needs once the title has cleared the floor.
+SEAT_MIN_SCORE = 0.55
+
+
+def _seat_on_tracklist(tracks: list[Track], tracklist: list[dict[str, Any]]) -> dict[int, int]:
+    """Pair files with tracklist entries: ``{track index: entry index}``.
+
+    Scored across the whole folder and assigned best-first, not in file
+    order: taking each file's best free entry in turn let an early file claim
+    the slot that belonged to a later one, which then had nowhere to go.
+
+    A file whose proposal already names a recording on this release is
+    seated there outright - that is identity, not resemblance.
+    """
+    pairs: list[tuple[float, int, int]] = []
+    for ti, track in enumerate(tracks):
+        rec_id = track.match.proposed.mb_recording_id
+        title = track.match.proposed.title or track.current.title or Path(track.path).stem
+        for ei, entry in enumerate(tracklist):
+            if rec_id and (entry.get("recording") or {}).get("id") == rec_id:
+                pairs.append((2.0, ti, ei))
+                continue
+            similar = similarity(title, entry["title"], drop_feat=True)
+            if similar < SEAT_TITLE_FLOOR:
+                continue
+            score = similar
+            if entry.get("length_ms") and track.props.duration_s:
+                delta = abs(entry["length_ms"] / 1000.0 - track.props.duration_s)
+                score = score * 0.75 + (0.25 if delta <= 3 else 0.0)
+            if track.current.track_no and entry.get("track_no") == track.current.track_no:
+                score += 0.15
+            if score >= SEAT_MIN_SCORE:
+                pairs.append((score, ti, ei))
+
+    # Ties fall back to folder order, so the result never depends on luck.
+    pairs.sort(key=lambda p: (-p[0], p[1], p[2]))
+    seated: dict[int, int] = {}
+    taken: set[int] = set()
+    for _score, ti, ei in pairs:
+        if ti in seated or ei in taken:
+            continue
+        seated[ti] = ei
+        taken.add(ei)
+    return seated
+
 
 def _credited_to(recording: dict[str, Any], cluster: "Counter[str]",
                  most_common: int) -> bool:

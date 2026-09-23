@@ -479,6 +479,98 @@ class TestAlbumConsolidation:
         assert all(t.match.confidence <= 97.0 for t in tracks)
 
 
+class TestConsolidationSeating:
+    """Only the right file may take a tracklist slot - never a lookalike."""
+
+    TRACKLIST = [
+        {"recording": {"id": "rec-mysterons"}, "title": "Mysterons", "length_ms": 306000,
+         "track_no": 1, "track_total": 3, "disc_no": 1, "disc_total": 1},
+        {"recording": {"id": "rec-strangers"}, "title": "Strangers", "length_ms": 238000,
+         "track_no": 2, "track_total": 3, "disc_no": 1, "disc_total": 1},
+        {"recording": {"id": "rec-numb"}, "title": "Numb", "length_ms": 239000,
+         "track_no": 3, "track_total": 3, "disc_no": 1, "disc_total": 1},
+    ]
+
+    def _track(self, matcher, name, title, seconds, release, recording):
+        track = make_track(path=rf"C:\Music\Portishead\Dummy\{name}.mp3",
+                           title=title, duration_s=seconds)
+        cand = make_candidate(title=title, length_s=seconds)
+        track.match = matcher._finish(track, matcher._observations(track), [cand], [], [])
+        track.match.proposed.mb_release_id = release
+        track.match.proposed.mb_recording_id = recording
+        return track
+
+    def test_a_different_song_of_the_same_length_is_not_reseated(self, matcher, monkeypatch):
+        """Regression: "Sour Times" took "Strangers"' recording ID on a length match alone."""
+        monkeypatch.setattr(matcher.mb, "full_release_tracklist", lambda mbid: self.TRACKLIST)
+        tracks = [
+            self._track(matcher, "01", "Mysterons", 306, "r1", "rec-mysterons"),
+            self._track(matcher, "03", "Numb", 239, "r1", "rec-numb"),
+            self._track(matcher, "xx", "Sour Times", 237, "r2", "rec-sour"),
+            self._track(matcher, "02", "Strangers", 238, "r1", "rec-strangers"),
+        ]
+        matcher._consolidate_album(tracks)
+        sour, strangers = tracks[2].match.proposed, tracks[3].match.proposed
+        assert sour.mb_recording_id == "rec-sour"
+        assert sour.mb_release_id == "r2"
+        assert strangers.mb_recording_id == "rec-strangers"
+        assert strangers.track_no == 2
+
+    def test_seating_is_best_first_not_folder_order(self, matcher, monkeypatch):
+        """An earlier, weaker match must not take the slot from the file it belongs to.
+
+        The first file resembles both entries but fits "Wandering Star" a little
+        worse than the second file, which *is* "Wandering Star". Taking files
+        in folder order handed the first file that slot and pushed the real
+        one onto "Wandering Stars".
+        """
+        tracklist = [
+            {"recording": {"id": "rec-star"}, "title": "Wandering Star", "length_ms": 293000,
+             "track_no": 1},
+            {"recording": {"id": "rec-stars"}, "title": "Wandering Stars", "length_ms": 250000,
+             "track_no": 2},
+            {"recording": {"id": "rec-roads"}, "title": "Roads", "length_ms": 305000,
+             "track_no": 3},
+        ]
+        monkeypatch.setattr(matcher.mb, "full_release_tracklist", lambda mbid: tracklist)
+        tracks = [
+            self._track(matcher, "a", "Wandering Stars", 293, "r1", None),
+            self._track(matcher, "b", "Wandering Star", 293, "r1", None),
+            self._track(matcher, "c", "Roads", 305, "r1", None),
+        ]
+        matcher._consolidate_album(tracks)
+        assert tracks[1].match.proposed.mb_recording_id == "rec-star"
+        assert tracks[0].match.proposed.mb_recording_id == "rec-stars"
+
+    def test_an_embedded_recording_id_is_seated_by_identity(self, matcher, monkeypatch):
+        monkeypatch.setattr(matcher.mb, "full_release_tracklist", lambda mbid: self.TRACKLIST)
+        tracks = [
+            self._track(matcher, "01", "Mysterons", 306, "r1", "rec-mysterons"),
+            self._track(matcher, "03", "Numb", 239, "r1", "rec-numb"),
+            # A title nothing like the tracklist's, but the same recording.
+            self._track(matcher, "02", "Track 02", 100, "r1", "rec-strangers"),
+        ]
+        matcher._consolidate_album(tracks)
+        assert tracks[2].match.proposed.track_no == 2
+
+
+class TestIdentifyCancellation:
+    def test_cancel_stops_inside_a_single_folder(self, matcher, monkeypatch):
+        """A flat folder of downloads is one group; Cancel has to reach into it."""
+        matcher.cfg.identify_workers = 1
+        tracks = [make_track(path=rf"C:\Music\Dump\{i:03d}.mp3") for i in range(50)]
+        seen = []
+        monkeypatch.setattr(matcher, "identify",
+                            lambda track: seen.append(track.path) or None)
+        consolidated = []
+        monkeypatch.setattr(matcher, "_consolidate_album",
+                            lambda items: consolidated.append(items))
+
+        matcher.identify_album(tracks, cancelled=lambda: len(seen) >= 3)
+        assert len(seen) == 3
+        assert not consolidated, "a half-identified folder must not be snapped together"
+
+
 class TestDiscTotals:
     """MusicBrainz search results contain only the matching medium."""
 

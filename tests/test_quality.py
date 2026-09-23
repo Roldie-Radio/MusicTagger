@@ -7,6 +7,7 @@ evidence it works, and a detector firing on ``clean`` is evidence it does not.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from musictag.quality.analysis import (
     _expected_cutoff_khz, _run_lengths, _spectral_cutoff, analyze_file,
@@ -488,3 +489,47 @@ class TestScoreExplainability:
         from musictag.models import SEVERITY_INFO, SEVERITY_PENALTY, quality_scale
         published = {s["key"] for s in quality_scale()["severities"]}
         assert published == set(SEVERITY_PENALTY) == set(SEVERITY_INFO)
+
+
+@ffmpeg_required
+class TestLongFileSampling:
+    """Long files are decoded as a head window plus their real ending, never whole."""
+
+    @pytest.fixture
+    def small_limits(self, monkeypatch):
+        import musictag.quality.analysis as analysis
+        monkeypatch.setattr(analysis, "LONG_FILE_S", 3)
+        monkeypatch.setattr(analysis, "SAMPLE_HEAD_S", 2)
+        monkeypatch.setattr(analysis, "SAMPLE_TAIL_S", 2)
+        calls = []
+        real = analysis.decode_samples
+
+        def spy(path, cfg, **kwargs):
+            calls.append(kwargs)
+            return real(path, cfg, **kwargs)
+
+        monkeypatch.setattr(analysis, "decode_samples", spy)
+        return calls
+
+    def test_never_decodes_the_whole_of_a_long_file(self, cfg, truncated_wav, small_limits):
+        report = analyze_file(truncated_wav, cfg)
+        assert report.metrics["sampled"] is True
+        assert report.metrics["analysed_seconds"] <= 2.01
+        assert small_limits, "expected at least one decode"
+        assert all(c.get("max_seconds") or c.get("from_end_s") for c in small_limits)
+
+    def test_the_real_ending_is_still_checked(self, cfg, truncated_wav, small_limits):
+        """The cut-off is at the very end - outside the head window."""
+        report = analyze_file(truncated_wav, cfg)
+        assert "abrupt_end" in codes(report)
+
+    def test_a_clean_ending_stays_clean(self, cfg, clean_wav, small_limits):
+        report = analyze_file(clean_wav, cfg)
+        assert report.metrics["sampled"] is True
+        assert "abrupt_end" not in codes(report)
+        assert "trailing_silence_s" in report.metrics
+
+    def test_short_files_are_still_decoded_whole(self, cfg, clean_wav):
+        report = analyze_file(clean_wav, cfg)
+        assert report.metrics["sampled"] is False
+        assert report.metrics["analysed_seconds"] >= 7.9

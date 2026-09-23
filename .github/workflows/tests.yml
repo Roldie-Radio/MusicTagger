@@ -2,7 +2,7 @@
 #
 # The release workflow runs it too, but only when an installer is built -
 # too late to find out a change broke something. ffmpeg is installed here
-# so the 136 tests that need it run rather than skip; without it a green
+# so the 140 tests that need it run rather than skip; without it a green
 # result says much less than it looks like it does.
 
 name: Tests

@@ -236,6 +236,13 @@ than take it on faith:
 > reach about 20.6 kHz, but this rolls off at 15.6 kHz. The file was probably
 > re-encoded upward from something smaller: the bitrate is real, the quality is not.
 
+Files longer than 15 minutes (DJ mixes, live sets, audiobooks) are *sampled*
+rather than decoded whole, so a ten-hour file costs no more memory than a
+short one. The first 8 minutes are measured for everything that is a rate or
+a share (clipping, clicks, spectrum, levels, dropouts), and the last 30
+seconds are decoded separately so a cut-off ending is still caught. Setting
+`quality_max_seconds` yourself overrides this.
+
 The cutoff detector finds the *edge* — the steepest sustained drop — rather than
 comparing against an absolute floor, which is what makes it work across quiet
 recordings, loud ones, and every spectral tilt in between.
@@ -395,7 +402,7 @@ is known. The suite includes a false-positive baseline: a clean file must come
 back quiet, or the detectors are not worth having.
 
 Building those fixtures needs `ffmpeg` on your `PATH`. Without it they skip
-rather than fail, taking 136 of the 451 tests out of the run - so a green result
+rather than fail, taking 140 of the 467 tests out of the run - so a green result
 on a machine with no ffmpeg is a weaker signal than it looks.
 [`desktop/build-resources/tools/README.md`](desktop/build-resources/tools/README.md)
 has the download links.

@@ -305,7 +305,7 @@ class TestJobs:
 
         tracks = [add_track(client.state, f"C:/Music/Flat/{i:02d}.mp3") for i in range(6)]
 
-        def fake_identify_album(self, items, *, progress=None):
+        def fake_identify_album(self, items, *, progress=None, cancelled=None):
             for i, t in enumerate(items):
                 t.status = "identified"
                 if progress:
@@ -340,7 +340,7 @@ class TestJobs:
         monkeypatch.setattr(client.state, "persist",
                             lambda tracks=None: saved.append([t.path for t in tracks]))
         monkeypatch.setattr(matching.Matcher, "identify_album",
-                            lambda self, items, progress=None: None)
+                            lambda self, items, progress=None, cancelled=None: None)
 
         job = client.post("/api/identify", json={"paths": [], "only_pending": False}).json()
         assert wait_for_job(client, job["id"])["status"] == "done"

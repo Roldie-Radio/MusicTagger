@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 import requests
@@ -21,6 +22,39 @@ _CACHE_MISS = object()
 
 class ProviderError(Exception):
     """A metadata source failed in a way the caller should surface, not swallow."""
+
+
+#: Worth another try after a pause. 429/503 are the rate limiter talking;
+#: 500/502/504 are a busy server or proxy having a bad moment, which
+#: MusicBrainz does under load - failing the lookup on the first one turned
+#: a blip into a missing match.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+#: Never sleep longer than this on one response, whatever the server asks.
+MAX_RETRY_WAIT_S = 30.0
+
+
+def retry_after_seconds(value: Optional[str], fallback: float) -> float:
+    """How long a ``Retry-After`` header asks us to wait.
+
+    The header is either a number of seconds or an HTTP date, and a server
+    may send either. Anything unreadable - or a date already in the past -
+    falls back to our own backoff rather than raising out of the request.
+    """
+    if not value:
+        return fallback
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return fallback
+    if when is None:
+        return fallback
+    return max(0.0, when.timestamp() - time.time()) or fallback
 
 
 class RateLimiter:
@@ -130,12 +164,13 @@ class HttpClient:
                 last_error = ProviderError(f"404 (unexpected for a search) from {url}")
                 time.sleep(min(2 ** attempt, 8))
                 continue
-            if resp.status_code in (429, 503):
+            if resp.status_code in RETRYABLE_STATUS:
                 # Backing off is mandatory here, not optional.
-                wait = float(resp.headers.get("Retry-After", 0) or (2 ** attempt))
-                log.info("Rate limited by %s, waiting %.1fs", url, wait)
-                time.sleep(min(wait, 30))
+                wait = retry_after_seconds(resp.headers.get("Retry-After"), 2 ** attempt)
+                log.info("%s from %s, waiting %.1fs", resp.status_code, url, wait)
                 last_error = ProviderError(f"{resp.status_code} from {url}")
+                if attempt + 1 < retries:
+                    time.sleep(min(wait, MAX_RETRY_WAIT_S))
                 continue
             if not resp.ok:
                 raise ProviderError(f"HTTP {resp.status_code} from {url}: {resp.text[:200]}")
