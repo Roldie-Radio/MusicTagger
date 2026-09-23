@@ -495,7 +495,14 @@ def api_export_plan(req: ExportPlanRequest) -> dict[str, Any]:
         plan = plan_export(
             tracks, cfg,
             progress=lambda done, total, name: job.progress(done, total, name),
+            cancelled=lambda: job.cancelled,
         )
+        if job.cancelled:
+            # Half an index would miss duplicates, so there is nothing
+            # trustworthy to review. The UI only opens a plan from a job
+            # that finished as "done".
+            job.log("Export cancelled")
+            return None
         dupes = sum(1 for i in plan.items if i.duplicate)
         job.log(f"{len(plan.items)} track(s) planned"
                 + (f", {dupes} possible duplicate(s) to resolve" if dupes else ""))
@@ -517,6 +524,7 @@ def api_export_commit(req: ExportCommitRequest) -> dict[str, Any]:
         report = commit_export(
             items, cfg,
             progress=lambda done, total, name: job.progress(done, total, name),
+            cancelled=lambda: job.cancelled,
         )
         # Only forget what actually left: a failed or skipped item is still
         # sitting in the ingest folder and must stay visible in the app.

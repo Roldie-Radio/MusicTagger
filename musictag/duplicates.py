@@ -55,21 +55,37 @@ class ExistingIndex:
     count: int
 
 
-def build_index(root: Path, progress: Optional[Callable[[int, int, str], None]] = None
-                ) -> ExistingIndex:
+def build_index(root: Path, progress: Optional[Callable[[int, int, str], None]] = None,
+                cancelled: Optional[Callable[[], bool]] = None) -> ExistingIndex:
     """Walk ``root`` and read tags of everything already there.
 
     Tag-only reads, no network calls - this is the same cost as a library
     Scan, not an Identify.
+
+    ``cancelled`` is checked between files, both while walking the folder and
+    while reading tags. On a big library, or one on a network share, either
+    step alone can take minutes, and Cancel has to work during both. A
+    cancelled walk returns whatever it had indexed so far.
     """
     by_mbid: dict[str, tuple[str, TrackTags]] = {}
     by_title: dict[str, list[tuple[str, TrackTags]]] = {}
     count = 0
 
-    files = [p for p in root.rglob("*") if p.suffix.lower() in SUPPORTED_EXTENSIONS] \
-        if root.exists() else []
+    files: list[Path] = []
+    if root.exists():
+        for path in root.rglob("*"):
+            if cancelled and cancelled():
+                return ExistingIndex(root=root, by_mbid=by_mbid, by_title=by_title, count=0)
+            if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                files.append(path)
+                # The total is not known until the walk ends, so report what
+                # has been found so far rather than showing nothing at all.
+                if progress and len(files) % 200 == 0:
+                    progress(0, 0, f"Found {len(files)} files so far")
     total = len(files)
     for done, path in enumerate(files, start=1):
+        if cancelled and cancelled():
+            break
         try:
             tags, _props = read_file(path)
         except Exception as exc:  # noqa: BLE001 - a bad file must not abort the whole index
