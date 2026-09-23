@@ -121,6 +121,9 @@ class ExportReport:
     skipped: int = 0
     failed: int = 0
     errors: list[dict[str, str]] = field(default_factory=list)
+    #: Source paths that were actually moved out - not serialised, the
+    #: server uses it to drop exactly those tracks from its state.
+    exported_paths: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +149,9 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
     * ``"replace"``  - move whatever is at ``existing_path`` into a trash
                        folder inside the Plex root first (never deleted
                        outright), then move the incoming file to ``dest``.
+                       The duplicate need not live at ``dest`` itself, so if
+                       something else still occupies ``dest`` the name is
+                       disambiguated exactly as for ``"export"``.
     * ``"skip"``     - leave the incoming file where it is; nothing moves.
     """
     journal = get_journal()
@@ -167,16 +173,21 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
                 if existing.exists():
                     trash = unique_path((plex_root or dest_path.parent) / TRASH_DIRNAME / existing.name)
                     trash.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(existing), str(trash))
-                    journal.record(report.batch_id, "move", str(existing), dest=str(trash))
+                    with journal.step(report.batch_id, "move", str(existing), dest=str(trash)):
+                        shutil.move(str(existing), str(trash))
                     report.replaced += 1
-            else:
-                dest_path = unique_path(dest_path)
+            # Always, including after a replace: the trashed duplicate may
+            # have been somewhere other than ``dest``, and moving onto an
+            # occupied name silently overwrites (shutil.move falls back to
+            # a copy that clobbers the target) - the one thing export must
+            # never do to a file already in the Plex library.
+            dest_path = unique_path(dest_path)
 
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source), str(dest_path))
-            journal.record(report.batch_id, "move", str(source), dest=str(dest_path))
+            with journal.step(report.batch_id, "move", str(source), dest=str(dest_path)):
+                shutil.move(str(source), str(dest_path))
             report.exported += 1
+            report.exported_paths.append(path)
         except Exception as exc:  # noqa: BLE001 - one bad file must not abort the batch
             log.exception("Export failed for %s", path)
             report.failed += 1

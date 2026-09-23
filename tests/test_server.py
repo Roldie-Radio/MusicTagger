@@ -6,6 +6,7 @@ here shows up as a silently empty screen rather than an exception.
 
 from __future__ import annotations
 
+import threading
 import time
 import wave
 from pathlib import Path
@@ -22,6 +23,7 @@ pytest.importorskip("httpx", reason="fastapi TestClient needs httpx")
 from fastapi.testclient import TestClient                     # noqa: E402
 
 from musictag import server                                   # noqa: E402
+from musictag.jobs import JobManager                           # noqa: E402
 from musictag.config import Config, set_config                # noqa: E402
 from musictag.state import AppState                           # noqa: E402
 
@@ -40,8 +42,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr("musictag.state.get_state", lambda: state)
     # Persisting would write to the shared sqlite store; not what we are testing.
     monkeypatch.setattr(state, "persist", lambda tracks=None: None)
+    # A job left running by one test must not block the next one's.
+    jobs = JobManager()
+    monkeypatch.setattr(server, "get_jobs", lambda: jobs)
 
-    with TestClient(server.app) as test_client:
+    # The real UI reaches the server as 127.0.0.1; TestClient defaults to
+    # "testserver", which the local-only guard rightly refuses.
+    with TestClient(server.app, base_url="http://127.0.0.1") as test_client:
         test_client.state = state
         test_client.config = config
         yield test_client
@@ -321,6 +328,40 @@ class TestJobs:
             time.sleep(0.02)
 
         assert seen_midway, "progress must tick up mid-batch, not jump straight from 0 to done"
+
+    def test_identify_saves_each_album_as_it_finishes(self, client, monkeypatch):
+        """A crash an hour in should cost one album, not the whole run."""
+        from musictag import matching
+
+        for folder in ("A", "B", "C"):
+            for i in range(2):
+                add_track(client.state, f"C:/Music/{folder}/{i:02d}.mp3")
+        saved: list[list[str]] = []
+        monkeypatch.setattr(client.state, "persist",
+                            lambda tracks=None: saved.append([t.path for t in tracks]))
+        monkeypatch.setattr(matching.Matcher, "identify_album",
+                            lambda self, items, progress=None: None)
+
+        job = client.post("/api/identify", json={"paths": [], "only_pending": False}).json()
+        assert wait_for_job(client, job["id"])["status"] == "done"
+        assert sorted(len(batch) for batch in saved) == [2, 2, 2]
+
+    def test_quality_counts_every_file_with_parallel_workers(self, client, monkeypatch):
+        from musictag.models import QualityReport
+
+        for i in range(40):
+            add_track(client.state, f"C:/Music/Q/{i:02d}.mp3")
+        client.config.ffmpeg_path = "ffmpeg"
+        client.config.quality_workers = 8
+        monkeypatch.setattr(type(client.config), "ffmpeg", property(lambda self: "ffmpeg"))
+        monkeypatch.setattr(server, "analyze_track",
+                            lambda track, cfg: QualityReport(analysed=True))
+
+        job = client.post("/api/quality", json={"paths": [], "only_pending": False}).json()
+        status = wait_for_job(client, job["id"])
+        assert status["status"] == "done", status.get("error")
+        assert status["result"]["analysed"] == 40
+        assert status["done"] == 40
 
     def test_apply_with_nothing_identified_is_rejected(self, client):
         response = client.post("/api/apply", json={"paths": []})
@@ -711,3 +752,119 @@ class TestExportToPlex:
         assert status["result"]["skipped"] == 1
         assert Path(track.path).exists()
         assert client.state.get(track.path) is not None
+
+    def test_failed_commit_keeps_the_track_tracked(self, client, tmp_path):
+        """A file that did not move is still in the ingest folder - keep showing it."""
+        track = make_ready_file(tmp_path / "in" / "a.wav", title="Glory Box", artist="Portishead")
+        client.state.add([track])
+        blocker = Path(client.config.organize_root) / "Portishead"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_text("a file where the artist folder should go")
+        dest = str(blocker / "01 - Glory Box.wav")
+
+        job = client.post("/api/export/commit", json={
+            "items": [{"path": track.path, "dest": dest, "action": "export"}],
+        }).json()
+        status = wait_for_job(client, job["id"])
+        assert status["result"]["failed"] == 1
+        assert Path(track.path).exists()
+        assert client.state.get(track.path) is not None
+
+
+class TestLocalOnlyGuard:
+    """Another website must not be able to drive this server (DNS rebinding, CSRF)."""
+
+    def test_foreign_host_is_refused(self, client):
+        response = client.get("/api/status", headers={"host": "attacker.example:8731"})
+        assert response.status_code == 403
+
+    def test_foreign_host_cannot_change_settings(self, client):
+        response = client.post("/api/config", json={"ffmpeg_path": "/tmp/evil"},
+                               headers={"host": "attacker.example:8731"})
+        assert response.status_code == 403
+        assert client.config.ffmpeg_path != "/tmp/evil"
+
+    @pytest.mark.parametrize("host", ["127.0.0.1:8731", "localhost:8731", "127.0.0.1"])
+    def test_local_hosts_are_allowed(self, client, host):
+        assert client.get("/api/status", headers={"host": host}).status_code == 200
+
+    @pytest.mark.parametrize("origin", ["https://attacker.example", "null"])
+    def test_cross_site_post_is_refused(self, client, origin):
+        response = client.post("/api/clear", headers={"origin": origin})
+        assert response.status_code == 403
+
+    def test_same_origin_post_is_allowed(self, client):
+        response = client.post("/api/clear", headers={"origin": "http://127.0.0.1:8731"})
+        assert response.status_code == 200
+
+
+class TestJobConflicts:
+    """Jobs that would trample each other's tracks or files are refused, not raced."""
+
+    @pytest.fixture
+    def held(self, client):
+        """Start a job of a given kind that stays running until the test ends."""
+        gate = threading.Event()
+        jobs = server.get_jobs()
+
+        def start(kind: str):
+            job = jobs.submit(kind, lambda job: gate.wait(10))
+            for _ in range(100):
+                if job.status == "running":
+                    break
+                time.sleep(0.01)
+            return job
+
+        yield start
+        gate.set()
+
+    def test_apply_is_refused_while_tagging(self, client, held):
+        add_track(client.state)
+        held("identify")
+        response = client.post("/api/apply", json={"paths": []})
+        assert response.status_code == 409
+        assert "tagging" in response.json()["error"]
+        assert response.json()["running"]["kind"] == "identify"
+
+    def test_tagging_and_quality_may_run_together(self, client, held):
+        held("quality")
+        job = server.get_jobs().submit("identify", lambda job: None)
+        assert job.kind == "identify"
+
+    def test_same_kind_cannot_run_twice(self, client, held):
+        add_track(client.state)
+        held("identify")
+        response = client.post("/api/identify", json={"paths": [], "only_pending": False})
+        assert response.status_code == 409
+
+    def test_refused_replace_scan_does_not_wipe_the_library(self, client, held, tmp_path):
+        add_track(client.state)
+        held("apply")
+        response = client.post("/api/scan", json={"paths": [str(tmp_path)], "replace": True})
+        assert response.status_code == 409
+        assert len(client.state.all()) == 1
+
+    def test_hand_edit_is_refused_while_tagging(self, client, held):
+        track = add_track(client.state)
+        held("identify")
+        response = client.post("/api/track/edit",
+                               json={"path": track.path, "tags": {"title": "Mine"}})
+        assert response.status_code == 409
+        assert track.match.proposed.title == "Song"
+
+    def test_hand_edit_is_allowed_during_a_quality_check(self, client, held):
+        track = add_track(client.state)
+        held("quality")
+        response = client.post("/api/track/edit",
+                               json={"path": track.path, "tags": {"title": "Mine"}})
+        assert response.status_code == 200
+
+    def test_finished_job_no_longer_blocks(self, client):
+        add_track(client.state)
+        job = server.get_jobs().submit("identify", lambda job: None)
+        for _ in range(100):
+            if job.status == "done":
+                break
+            time.sleep(0.01)
+        response = client.post("/api/apply", json={"paths": [], "dry_run": True})
+        assert response.status_code == 200

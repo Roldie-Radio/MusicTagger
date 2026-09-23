@@ -19,6 +19,50 @@ from typing import Any, Callable, Optional
 log = logging.getLogger(__name__)
 
 
+#: Jobs that read or change the library's tracks or files. Two of these at
+#: once can trample each other: Apply writing a proposal while Identify
+#: replaces it, an undo moving files an export is moving, a scan swapping
+#: out tracks mid-identify.
+LIBRARY_JOBS = frozenset({
+    "scan", "identify", "quality", "apply", "preview",
+    "export-plan", "export-commit", "undo",
+})
+
+#: Library jobs that may overlap each other - Identify only touches a
+#: track's match and Quality only its quality report, so running both at
+#: once is safe and saves a lot of waiting. Neither may run twice at once.
+SHAREABLE_JOBS = frozenset({"identify", "quality"})
+
+#: Jobs that change a track's proposed tags. A hand edit or candidate pick
+#: made while one runs would be silently overwritten (or be half-applied).
+EDIT_BLOCKING_JOBS = frozenset({"scan", "identify", "apply", "export-commit", "undo"})
+
+
+def jobs_conflict(a: str, b: str) -> bool:
+    """Can a job of kind ``a`` not start while one of kind ``b`` is active?"""
+    if a not in LIBRARY_JOBS or b not in LIBRARY_JOBS:
+        return False
+    if a in SHAREABLE_JOBS and b in SHAREABLE_JOBS:
+        return a == b
+    return True
+
+
+JOB_LABELS = {
+    "scan": "a scan", "identify": "tagging", "quality": "a quality check",
+    "apply": "an apply", "preview": "a preview", "export-plan": "an export plan",
+    "export-commit": "an export", "undo": "an undo",
+}
+
+
+class JobConflict(RuntimeError):
+    """Raised instead of starting a job that would clash with a running one."""
+
+    def __init__(self, running: "Job"):
+        self.running = running
+        label = JOB_LABELS.get(running.kind, running.kind)
+        super().__init__(f"Wait for {label} to finish (or cancel it) first.")
+
+
 @dataclass
 class Job:
     id: str
@@ -80,8 +124,16 @@ class JobManager:
                                         thread_name_prefix="musictag-job")
 
     def submit(self, kind: str, fn: Callable[[Job], Any], *, message: str = "") -> Job:
+        """Start ``fn`` in the background, or raise :class:`JobConflict`.
+
+        The conflict check and the registration happen under one lock, so
+        two requests racing each other cannot both get through.
+        """
         job = Job(id=uuid.uuid4().hex[:12], kind=kind, message=message)
         with self._lock:
+            for other in self._jobs.values():
+                if other.status in ("pending", "running") and jobs_conflict(kind, other.kind):
+                    raise JobConflict(other)
             self._jobs[job.id] = job
             self._order.append(job.id)
             # Keep the list from growing forever in a long-running session.
@@ -117,7 +169,12 @@ class JobManager:
             return [self._jobs[j].to_dict() for j in reversed(self._order) if j in self._jobs]
 
     def active(self) -> list[Job]:
-        return [j for j in self._jobs.values() if j.status in ("pending", "running")]
+        with self._lock:
+            return [j for j in self._jobs.values() if j.status in ("pending", "running")]
+
+    def running_any(self, kinds: frozenset[str]) -> Optional[Job]:
+        """The first active job of one of ``kinds``, if any."""
+        return next((j for j in self.active() if j.kind in kinds), None)
 
     def cancel(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)

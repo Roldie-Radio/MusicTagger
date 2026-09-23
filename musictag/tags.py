@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from typing import Optional
+from typing import Collection, Optional
 
 import mutagen
 from mutagen.aiff import AIFF
@@ -74,7 +74,19 @@ class BaseAdapter:
     # -- writing -------------------------------------------------------
     def write(self, tags: TrackTags, *, art: Optional[bytes] = None,
               art_mime: str = "image/jpeg", id3v2_version: int = 4,
-              write_mb_ids: bool = True) -> None:
+              write_mb_ids: bool = True, clear: Collection[str] = ()) -> None:
+        """Write ``tags`` to the file.
+
+        An empty field means "no opinion": whatever the file has is left
+        alone, so applying never erases a tag the proposal does not cover.
+
+        ``clear`` names the :class:`TrackTags` fields for which an empty value
+        should instead *remove* the tag (``"has_art"`` covers embedded art).
+        Undo passes the fields Apply wrote, so a tag Apply added to a blank
+        field is taken away again rather than surviving the undo. Only those
+        fields: a tag this app could not parse reads as empty too, and must
+        not be deleted just because it looked blank.
+        """
         raise NotImplementedError
 
 
@@ -163,49 +175,71 @@ class ID3Adapter(BaseAdapter):
         )
 
     def write(self, tags: TrackTags, *, art=None, art_mime="image/jpeg",
-              id3v2_version: int = 4, write_mb_ids: bool = True) -> None:
+              id3v2_version: int = 4, write_mb_ids: bool = True,
+              clear: Collection[str] = ()) -> None:
         id3 = self.id3
 
-        def put(frame_cls, key: str, value):
+        def put(frame_cls, key: str, field: str):
+            value = getattr(tags, field)
             if value in (None, ""):
+                if field in clear:
+                    id3.delall(key)
                 return
             id3.setall(key, [frame_cls(encoding=3, text=[str(value)])])
 
-        put(TIT2, "TIT2", tags.title)
-        put(TPE1, "TPE1", tags.artist)
-        put(TALB, "TALB", tags.album)
-        put(TPE2, "TPE2", tags.album_artist)
-        put(TCON, "TCON", tags.genre)
-        put(TCOM, "TCOM", tags.composer)
-        put(TSRC, "TSRC", tags.isrc)
-        if tags.date:
-            id3.setall("TDRC", [TDRC(encoding=3, text=[str(tags.date)])])
+        put(TIT2, "TIT2", "title")
+        put(TPE1, "TPE1", "artist")
+        put(TALB, "TALB", "album")
+        put(TPE2, "TPE2", "album_artist")
+        put(TCON, "TCON", "genre")
+        put(TCOM, "TCOM", "composer")
+        put(TSRC, "TSRC", "isrc")
+        put(TDRC, "TDRC", "date")
         if tags.track_no:
             value = f"{tags.track_no}/{tags.track_total}" if tags.track_total else str(tags.track_no)
             id3.setall("TRCK", [TRCK(encoding=3, text=[value])])
+        elif "track_no" in clear:
+            id3.delall("TRCK")
         if tags.disc_no:
             value = f"{tags.disc_no}/{tags.disc_total}" if tags.disc_total else str(tags.disc_no)
             id3.setall("TPOS", [TPOS(encoding=3, text=[value])])
-        id3.setall("TCMP", [TCMP(encoding=3, text=["1" if tags.compilation else "0"])])
+        elif "disc_no" in clear:
+            id3.delall("TPOS")
+        # Only a real compilation gets the flag. A file that never had one is
+        # left without it, rather than gaining a "0" nobody asked for; one
+        # that wrongly says "1" is corrected.
+        if tags.compilation:
+            id3.setall("TCMP", [TCMP(encoding=3, text=["1"])])
+        elif "compilation" in clear:
+            id3.delall("TCMP")
+        elif id3.getall("TCMP"):
+            id3.setall("TCMP", [TCMP(encoding=3, text=["0"])])
 
         if write_mb_ids:
-            def txxx(desc: str, value: Optional[str]):
+            def txxx(desc: str, field: str):
+                value = getattr(tags, field)
                 if not value:
+                    if field in clear:
+                        id3.delall(f"TXXX:{desc}")
                     return
                 id3.delall(f"TXXX:{desc}")
                 id3.add(TXXX(encoding=3, desc=desc, text=[value]))
 
-            txxx("MusicBrainz Album Id", tags.mb_release_id)
-            txxx("MusicBrainz Release Group Id", tags.mb_release_group_id)
-            txxx("MusicBrainz Artist Id", tags.mb_artist_id)
-            txxx("MusicBrainz Album Artist Id", tags.mb_album_artist_id)
+            txxx("MusicBrainz Album Id", "mb_release_id")
+            txxx("MusicBrainz Release Group Id", "mb_release_group_id")
+            txxx("MusicBrainz Artist Id", "mb_artist_id")
+            txxx("MusicBrainz Album Artist Id", "mb_album_artist_id")
             if tags.mb_recording_id:
                 id3.delall(f"UFID:{MB_UFID_OWNER}")
                 id3.add(UFID(owner=MB_UFID_OWNER, data=tags.mb_recording_id.encode("ascii")))
+            elif "mb_recording_id" in clear:
+                id3.delall(f"UFID:{MB_UFID_OWNER}")
 
         if art:
             id3.delall("APIC")
             id3.add(APIC(encoding=3, mime=art_mime, type=3, desc="Front cover", data=art))
+        elif "has_art" in clear and not tags.has_art:
+            id3.delall("APIC")
 
         if id3v2_version == 3:
             id3.update_to_v23()
@@ -287,36 +321,51 @@ class VorbisAdapter(BaseAdapter):
         )
 
     def write(self, tags: TrackTags, *, art=None, art_mime="image/jpeg",
-              id3v2_version: int = 4, write_mb_ids: bool = True) -> None:
+              id3v2_version: int = 4, write_mb_ids: bool = True,
+              clear: Collection[str] = ()) -> None:
         tag = self.file.tags
 
-        def put(key: str, value):
+        def drop(key: str) -> None:
+            if key in tag:
+                del tag[key]
+
+        def put(key: str, field: str):
+            value = getattr(tags, field)
             if value in (None, ""):
+                if field in clear:
+                    drop(key)
                 return
             tag[key] = [str(value)]
 
-        put("TITLE", tags.title)
-        put("ARTIST", tags.artist)
-        put("ALBUM", tags.album)
-        put("ALBUMARTIST", tags.album_artist)
-        put("TRACKNUMBER", tags.track_no)
-        put("TRACKTOTAL", tags.track_total)
-        put("TOTALTRACKS", tags.track_total)
-        put("DISCNUMBER", tags.disc_no)
-        put("DISCTOTAL", tags.disc_total)
-        put("TOTALDISCS", tags.disc_total)
-        put("DATE", tags.date)
-        put("GENRE", tags.genre)
-        put("COMPOSER", tags.composer)
-        put("ISRC", tags.isrc)
-        tag["COMPILATION"] = ["1" if tags.compilation else "0"]
+        put("TITLE", "title")
+        put("ARTIST", "artist")
+        put("ALBUM", "album")
+        put("ALBUMARTIST", "album_artist")
+        put("TRACKNUMBER", "track_no")
+        put("TRACKTOTAL", "track_total")
+        put("TOTALTRACKS", "track_total")
+        put("DISCNUMBER", "disc_no")
+        put("DISCTOTAL", "disc_total")
+        put("TOTALDISCS", "disc_total")
+        put("DATE", "date")
+        put("GENRE", "genre")
+        put("COMPOSER", "composer")
+        put("ISRC", "isrc")
+        # Same rule as ID3: flag real compilations, correct a stale "1",
+        # otherwise leave the tag absent.
+        if tags.compilation:
+            tag["COMPILATION"] = ["1"]
+        elif "compilation" in clear:
+            drop("COMPILATION")
+        elif "COMPILATION" in tag:
+            tag["COMPILATION"] = ["0"]
 
         if write_mb_ids:
-            put("MUSICBRAINZ_TRACKID", tags.mb_recording_id)
-            put("MUSICBRAINZ_ALBUMID", tags.mb_release_id)
-            put("MUSICBRAINZ_RELEASEGROUPID", tags.mb_release_group_id)
-            put("MUSICBRAINZ_ARTISTID", tags.mb_artist_id)
-            put("MUSICBRAINZ_ALBUMARTISTID", tags.mb_album_artist_id)
+            put("MUSICBRAINZ_TRACKID", "mb_recording_id")
+            put("MUSICBRAINZ_ALBUMID", "mb_release_id")
+            put("MUSICBRAINZ_RELEASEGROUPID", "mb_release_group_id")
+            put("MUSICBRAINZ_ARTISTID", "mb_artist_id")
+            put("MUSICBRAINZ_ALBUMARTISTID", "mb_album_artist_id")
 
         if art:
             pic = Picture()
@@ -331,6 +380,10 @@ class VorbisAdapter(BaseAdapter):
                 tag["metadata_block_picture"] = [
                     base64.b64encode(pic.write()).decode("ascii")
                 ]
+        elif "has_art" in clear and not tags.has_art:
+            if isinstance(self.file, FLAC):
+                self.file.clear_pictures()
+            drop("metadata_block_picture")
 
         self.file.save()
 
@@ -417,17 +470,36 @@ class MP4Adapter(BaseAdapter):
         )
 
     def write(self, tags: TrackTags, *, art=None, art_mime="image/jpeg",
-              id3v2_version: int = 4, write_mb_ids: bool = True) -> None:
+              id3v2_version: int = 4, write_mb_ids: bool = True,
+              clear: Collection[str] = ()) -> None:
         tag = self.file.tags
+
+        def drop(key: str, field: str) -> None:
+            if field in clear and key in tag:
+                del tag[key]
+
         for attr, key in self.KEYS.items():
             value = getattr(tags, attr)
             if value not in (None, ""):
                 tag[key] = [str(value)]
+            else:
+                drop(key, attr)
         if tags.track_no:
             tag["trkn"] = [(int(tags.track_no), int(tags.track_total or 0))]
+        else:
+            drop("trkn", "track_no")
         if tags.disc_no:
             tag["disk"] = [(int(tags.disc_no), int(tags.disc_total or 0))]
-        tag["cpil"] = bool(tags.compilation)
+        else:
+            drop("disk", "disc_no")
+        # Same rule as ID3: flag real compilations, correct a stale "1",
+        # otherwise leave the atom absent.
+        if tags.compilation:
+            tag["cpil"] = True
+        elif "compilation" in clear:
+            drop("cpil", "compilation")
+        elif "cpil" in tag:
+            tag["cpil"] = False
 
         for attr, key in self.FREEFORM.items():
             if attr.startswith("mb_") and not write_mb_ids:
@@ -435,10 +507,14 @@ class MP4Adapter(BaseAdapter):
             value = getattr(tags, attr)
             if value not in (None, ""):
                 tag[key] = [str(value).encode("utf-8")]
+            else:
+                drop(key, attr)
 
         if art:
             fmt = MP4Cover.FORMAT_PNG if art_mime == "image/png" else MP4Cover.FORMAT_JPEG
             tag["covr"] = [MP4Cover(art, imageformat=fmt)]
+        elif not tags.has_art:
+            drop("covr", "has_art")
 
         self.file.save()
 
@@ -498,17 +574,22 @@ class ASFAdapter(BaseAdapter):
         )
 
     def write(self, tags: TrackTags, *, art=None, art_mime="image/jpeg",
-              id3v2_version: int = 4, write_mb_ids: bool = True) -> None:
+              id3v2_version: int = 4, write_mb_ids: bool = True,
+              clear: Collection[str] = ()) -> None:
         for attr, key in self.KEYS.items():
             if attr.startswith("mb_") and not write_mb_ids:
                 continue
             value = getattr(tags, attr)
             if value not in (None, ""):
                 self.file.tags[key] = [ASFUnicodeAttribute(str(value))]
-        if tags.track_no:
-            self.file.tags["WM/TrackNumber"] = [ASFUnicodeAttribute(str(tags.track_no))]
-        if tags.disc_no:
-            self.file.tags["WM/PartOfSet"] = [ASFUnicodeAttribute(str(tags.disc_no))]
+            elif attr in clear and key in self.file.tags:
+                del self.file.tags[key]
+        for key, attr in (("WM/TrackNumber", "track_no"), ("WM/PartOfSet", "disc_no")):
+            value = getattr(tags, attr)
+            if value:
+                self.file.tags[key] = [ASFUnicodeAttribute(str(value))]
+            elif attr in clear and key in self.file.tags:
+                del self.file.tags[key]
         self.file.save()
 
 
@@ -537,12 +618,14 @@ def read_file(path: Path) -> tuple[TrackTags, AudioProps]:
 
 def write_file(path: Path, tags: TrackTags, *, art: Optional[bytes] = None,
                art_mime: str = "image/jpeg", id3v2_version: int = 4,
-               write_mb_ids: bool = True) -> None:
+               write_mb_ids: bool = True, clear: Collection[str] = ()) -> None:
+    """Write tags; see :meth:`BaseAdapter.write` for what ``clear`` does."""
     adapter = get_adapter(path)
     if art and not adapter.supports_art:
         art = None
     adapter.write(tags, art=art, art_mime=art_mime,
-                  id3v2_version=id3v2_version, write_mb_ids=write_mb_ids)
+                  id3v2_version=id3v2_version, write_mb_ids=write_mb_ids,
+                  clear=clear)
 
 
 def read_embedded_art(path: Path) -> Optional[tuple[bytes, str]]:

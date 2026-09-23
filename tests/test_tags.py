@@ -106,6 +106,19 @@ class TestRoundTrip:
         assert read_back.compilation is True
         assert read_back.album_artist == "Various Artists"
 
+    def test_non_compilation_does_not_gain_a_flag(self, taggable):
+        """A plain album should not come back carrying a compilation tag it never had."""
+        import mutagen
+        write_file(taggable, FULL_TAGS)
+        keys = {k.lower() for k in (mutagen.File(taggable).tags or {}).keys()}
+        assert not keys & {"tcmp", "compilation", "cpil"}
+
+    def test_stale_compilation_flag_is_corrected(self, taggable):
+        write_file(taggable, TrackTags(**{**FULL_TAGS.to_dict(), "compilation": True}))
+        write_file(taggable, FULL_TAGS)
+        read_back, _ = read_file(taggable)
+        assert read_back.compilation is False
+
     def test_rewriting_replaces_rather_than_duplicates(self, taggable):
         write_file(taggable, FULL_TAGS)
         second = TrackTags(**{**FULL_TAGS.to_dict(), "title": "Roads", "track_no": 11})

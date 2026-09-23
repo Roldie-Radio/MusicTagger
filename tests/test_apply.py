@@ -7,6 +7,7 @@ a docstring.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -240,6 +241,30 @@ class TestUndo:
         assert all(c.exists() for c in copies)
         assert any("copy" in m.lower() for m in result.messages)
 
+    def test_undo_removes_tags_apply_added(self, library, cfg, journal):
+        """Fields that were blank before Apply must be blank again after undo."""
+        album, files = library
+        report = Applier(cfg).apply(build_tracks(files), ApplyOptions())
+        journal.undo(report.batch_id)
+
+        tags, _ = read_file(files[0])
+        assert tags.title == "Old Title 1"
+        assert tags.album is None
+        assert tags.album_artist is None
+        assert tags.track_no is None
+        assert tags.date is None
+
+    def test_undo_keeps_tags_apply_did_not_touch(self, library, cfg, journal):
+        album, files = library
+        write_file(files[0], TrackTags(title="Old Title 1", artist="Old Artist", genre="Trip hop"))
+        tracks = build_tracks(files)
+        assert tracks[0].match.proposed.genre is None
+        report = Applier(cfg).apply(tracks, ApplyOptions())
+        journal.undo(report.batch_id)
+
+        tags, _ = read_file(files[0])
+        assert tags.genre == "Trip hop"
+
     def test_undo_is_reported_not_silent(self, library, cfg, journal):
         album, files = library
         report = Applier(cfg).apply(build_tracks(files), ApplyOptions())
@@ -274,3 +299,74 @@ class TestJournal:
         removed = journal.prune(keep=2)
         assert removed == 3
         assert len(journal.list_batches()) == 2
+
+
+@ffmpeg_required
+@pytest.mark.parametrize("ext, codec", [
+    ("flac", ["-codec:a", "flac"]),
+    ("m4a", ["-codec:a", "aac", "-b:a", "128k"]),
+    ("ogg", ["-codec:a", "libvorbis"]),
+    ("opus", ["-codec:a", "libopus"]),
+])
+def test_undo_removes_added_tags_in_every_format(tmp_path, clean_wav, cfg, journal, ext, codec):
+    path = encode(clean_wav, tmp_path / f"song.{ext}", *codec)
+    write_file(path, TrackTags(title="Old", artist="Old Artist"))
+    track = Track(path=str(path), filename=path.name)
+    track.current, track.props = read_file(path)
+    track.match = MatchResult(confidence=95.0, proposed=proposed_for(1),
+                              candidates=[], method="test")
+    cfg.write_musicbrainz_ids = True
+    track.match.proposed.mb_release_id = "0000-release"
+
+    report = Applier(cfg).apply([track], ApplyOptions())
+    applied, _ = read_file(path)
+    assert applied.album == "Dummy" and applied.mb_release_id == "0000-release"
+
+    journal.undo(report.batch_id)
+    tags, _ = read_file(path)
+    assert (tags.title, tags.artist) == ("Old", "Old Artist")
+    assert tags.album is None
+    assert tags.album_artist is None
+    assert tags.track_no is None
+    assert tags.disc_no is None
+    assert tags.date is None
+    assert tags.mb_release_id is None
+    assert not tags.compilation
+
+
+@ffmpeg_required
+def test_move_is_journalled_before_it_happens(library, cfg, journal, monkeypatch):
+    """A crash mid-move must still leave undo a record of where the file went."""
+    album, files = library
+    seen = []
+    real_move = shutil.move
+
+    def spying_move(src, dst):
+        batch = journal.list_batches()[0]["id"]
+        seen.append([e["op"] for e in journal.batch_entries(batch)])
+        return real_move(src, dst)
+
+    monkeypatch.setattr("musictag.apply.shutil.move", spying_move)
+    Applier(cfg).apply(build_tracks(files)[:1], ApplyOptions(organize=True))
+
+    assert seen and "move" in seen[0], "the move entry must exist before the move runs"
+
+
+@ffmpeg_required
+def test_failed_move_is_not_replayed_by_undo(library, cfg, journal, monkeypatch):
+    album, files = library
+
+    def broken_move(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("musictag.apply.shutil.move", broken_move)
+    report = Applier(cfg).apply(build_tracks(files)[:1], ApplyOptions(organize=True))
+    assert report.failed == 1
+
+    moves = [e for e in journal.batch_entries(report.batch_id) if e["op"] == "move"]
+    assert len(moves) == 1
+    assert moves[0]["ok"] == 0 and "disk full" in moves[0]["error"]
+
+    result = journal.undo(report.batch_id)
+    assert result.failed == 0
+    assert not any("move" in m.lower() for m in result.messages)

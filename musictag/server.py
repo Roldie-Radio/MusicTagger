@@ -13,8 +13,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -25,7 +26,7 @@ from .cache import http_cache
 from .config import APP_DIR, get_config, set_config
 from .export_plex import commit_export, plan_export
 from .fingerprint import FPCALC_HOMEPAGE, fpcalc_download_url, install_fpcalc
-from .jobs import Job, get_jobs
+from .jobs import EDIT_BLOCKING_JOBS, Job, JobConflict, get_jobs
 from .journal import get_journal
 from .library import scan as scan_library
 from .matching import Matcher
@@ -41,6 +42,44 @@ log = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 
 app = FastAPI(title="MusicTagger", version=__version__, docs_url=None, redoc_url=None)
+
+
+# ===========================================================================
+# Local-only guard
+# ===========================================================================
+
+#: Hostnames the UI legitimately reaches this server by. Binding to 127.0.0.1
+#: stops other machines connecting, but not other *websites*: a page can point
+#: its own domain at 127.0.0.1 (DNS rebinding) and its requests then arrive
+#: here same-origin, able to read folders, move files, or set ``ffmpeg_path``
+#: to any program and have the next quality scan run it. Such a request still
+#: names the attacker's domain in its Host header, which is what this checks.
+ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _hostname(value: str) -> str:
+    """``host[:port]`` -> ``host``, lowercased; IPv6 brackets kept intact."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value.split("]", 1)[0] + "]"
+    return value.rsplit(":", 1)[0] if ":" in value else value
+
+
+@app.middleware("http")
+async def local_only(request: Request, call_next):
+    if _hostname(request.headers.get("host", "")) not in ALLOWED_HOSTS:
+        return JSONResponse({"error": "Forbidden host."}, status_code=403)
+    # A cross-site form POST carries no JSON, but endpoints with no body
+    # (clear, cancel, install-fpcalc) would still run. Browsers always send
+    # Origin on such requests, so refuse any that come from another site.
+    if request.method not in _SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin and (origin == "null"
+                       or _hostname(urlsplit(origin).netloc) not in ALLOWED_HOSTS):
+            return JSONResponse({"error": "Cross-site request refused."}, status_code=403)
+    return await call_next(request)
 
 
 # ===========================================================================
@@ -248,10 +287,12 @@ def api_scan(req: ScanRequest) -> dict[str, Any]:
         cfg.save()
 
     state = get_state()
-    if req.replace:
-        state.clear()
 
     def run(job: Job):
+        # Inside the job, not before submitting it: a scan refused because
+        # another job is running must not have wiped the library first.
+        if req.replace:
+            state.clear()
         job.log(f"Scanning {len(paths)} folder(s)")
         tracks = scan_library(
             paths, recursive=req.recursive, workers=cfg.scan_workers,
@@ -302,12 +343,13 @@ def api_identify(req: SelectionRequest) -> dict[str, Any]:
                     job.progress(completed, len(tracks), Path(path).name)
 
             matcher.identify_album(items, progress=on_track)
+            # Save each album as it finishes: a crash or a closed window an
+            # hour into a big library should cost one album, not the run.
+            state.persist(items)
 
         workers = max(1, min(cfg.identify_workers, len(groups)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(do_group, groups.values()))
-
-        state.persist(tracks)
         identified = sum(1 for t in tracks if t.match and t.match.candidates)
         job.log(f"Identified {identified} of {len(tracks)} tracks")
         return {"identified": identified, "total": len(tracks)}
@@ -333,6 +375,7 @@ def api_quality(req: SelectionRequest) -> dict[str, Any]:
     def run(job: Job):
         job.total = len(tracks)
         done = 0
+        progress_lock = threading.Lock()
 
         def analyse(track: Track):
             nonlocal done
@@ -344,13 +387,17 @@ def api_quality(req: SelectionRequest) -> dict[str, Any]:
                 log.exception("Quality analysis failed for %s", track.path)
                 from .models import QualityReport
                 track.quality = QualityReport(analysed=False, error=str(exc))
-            done += 1
-            job.progress(done, len(tracks), track.filename)
+            # Decoding a file takes seconds, so saving each result as it lands
+            # costs nothing and means an interrupted run keeps its work.
+            state.persist([track])
+            # ``done += 1`` is a read-modify-write; unguarded, workers
+            # finishing together lose counts and the final tally comes up short.
+            with progress_lock:
+                done += 1
+                job.progress(done, len(tracks), track.filename)
 
         with ThreadPoolExecutor(max_workers=max(1, cfg.quality_workers)) as pool:
             list(pool.map(analyse, tracks))
-
-        state.persist(tracks)
         flagged = sum(1 for t in tracks if t.quality and t.quality.issues)
         job.log(f"Analysed {done} files, {flagged} with findings")
         return {"analysed": done, "flagged": flagged}
@@ -470,8 +517,9 @@ def api_export_commit(req: ExportCommitRequest) -> dict[str, Any]:
             items, cfg,
             progress=lambda done, total, name: job.progress(done, total, name),
         )
-        moved = [i["path"] for i in items if i.get("action") != "skip"]
-        state.remove(moved)
+        # Only forget what actually left: a failed or skipped item is still
+        # sitting in the ingest folder and must stay visible in the app.
+        state.remove(report.exported_paths)
         job.log(f"Exported {report.exported}, replaced {report.replaced}, "
                 f"skipped {report.skipped}, failed {report.failed}")
         return report.to_dict()
@@ -513,9 +561,17 @@ def api_track(path: str) -> dict[str, Any]:
     return payload
 
 
+def _refuse_edit_while_busy() -> None:
+    """A hand edit made mid-Identify or mid-Apply would be lost or half-written."""
+    busy = get_jobs().running_any(EDIT_BLOCKING_JOBS)
+    if busy:
+        raise HTTPException(409, str(JobConflict(busy)))
+
+
 @app.post("/api/track/choose")
 def api_choose(req: ChooseRequest) -> dict[str, Any]:
     """Pick a different candidate for a track."""
+    _refuse_edit_while_busy()
     state = get_state()
     track = state.get(req.path)
     if not track or not track.match:
@@ -542,6 +598,7 @@ def api_choose(req: ChooseRequest) -> dict[str, Any]:
 @app.post("/api/track/edit")
 def api_edit(req: EditRequest) -> dict[str, Any]:
     """Hand-edit the proposed tags for one track."""
+    _refuse_edit_while_busy()
     state = get_state()
     track = state.get(req.path)
     if not track:
@@ -679,6 +736,13 @@ def index() -> FileResponse:
 @app.exception_handler(HTTPException)
 def http_error(request, exc: HTTPException):
     return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+
+@app.exception_handler(JobConflict)
+def job_conflict(request, exc: JobConflict):
+    """Every job endpoint refuses the same way: 409, with what to wait for."""
+    return JSONResponse({"error": str(exc), "running": exc.running.to_dict()},
+                        status_code=409)
 
 
 if WEB_DIR.exists():

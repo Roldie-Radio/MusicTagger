@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import logging
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from .config import Config
 from .journal import get_journal
-from .models import Track
+from .models import Track, TrackTags
 from .organize import companion_files, plan_path
 from .providers.coverart import CoverArtClient
 from .tags import read_embedded_art, write_file
@@ -61,6 +61,25 @@ class ApplyReport:
             "planned": self.planned,
             "errors": self.errors,
         }
+
+
+def _written_fields(tags: TrackTags, *, art: bool, mb_ids: bool) -> list[str]:
+    """Which fields a write of ``tags`` actually sets - what undo may clear.
+
+    Mirrors the writers in :mod:`musictag.tags`: an empty field is left
+    alone, and art only counts when some was embedded. The compilation flag
+    is listed whatever its value, because a writer may correct a stale "1"
+    to "0"; undo then restores the snapshot's flag, removing it if it was
+    not set.
+    """
+    written = [f.name for f in fields(TrackTags)
+               if f.name not in ("compilation", "has_art", "year")
+               and (mb_ids or not f.name.startswith("mb_"))
+               and getattr(tags, f.name) not in (None, "")]
+    written.append("compilation")
+    if art:
+        written.append("has_art")
+    return written
 
 
 class Applier:
@@ -129,7 +148,9 @@ class Applier:
             if options.dry_run:
                 report.tagged += 1
             else:
-                journal.record(report.batch_id, "tags", str(source), prev_tags=track.current)
+                journal.record(report.batch_id, "tags", str(source), prev_tags=track.current,
+                               written=_written_fields(proposed, art=bool(art),
+                                                       mb_ids=self.cfg.write_musicbrainz_ids))
                 write_file(
                     source, proposed,
                     art=art[0] if art else None,
@@ -156,12 +177,12 @@ class Applier:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest = unique_path(dest)
             if self.cfg.organize_mode == "copy":
-                shutil.copy2(source, dest)
-                journal.record(report.batch_id, "copy", str(source), dest=str(dest))
+                with journal.step(report.batch_id, "copy", str(source), dest=str(dest)):
+                    shutil.copy2(source, dest)
                 report.copied += 1
             else:
-                shutil.move(str(source), str(dest))
-                journal.record(report.batch_id, "move", str(source), dest=str(dest))
+                with journal.step(report.batch_id, "move", str(source), dest=str(dest)):
+                    shutil.move(str(source), str(dest))
                 report.moved += 1
                 track.path = str(dest)
                 track.filename = dest.name

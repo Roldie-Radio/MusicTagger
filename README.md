@@ -248,10 +248,24 @@ recordings, loud ones, and every spectral tilt in between.
 - **Every write is journalled** with the previous tag values. Settings → History
   lists every batch with an Undo button; undo restores the old tags and moves
   files back where they came from.
+- **Undo takes back what Apply added.** A tag Apply wrote into a field that was
+  blank before is removed again on undo, not left behind; tags Apply never
+  touched are left exactly as they were.
 - **Undo never deletes.** If you organised in *copy* mode, undo reports the
   copies it made rather than removing files.
 - **Preview first.** The Preview button shows every planned tag write and file
   move without touching anything.
+- **Conflicting work never overlaps.** Tagging and a quality check can run
+  side by side, but a scan, Apply, export or undo only starts when nothing else is
+  touching the library - otherwise the app tells you what to wait for rather
+  than racing it. Hand edits are held off while tagging or applying, so they cannot be
+  overwritten mid-run.
+- **Export never overwrites.** A file already sitting where an export would
+  land is kept; the incoming file gets a `(2)` name instead.
+- **Only this app can drive the local server.** It answers only requests
+  addressed to `127.0.0.1`/`localhost` and refuses state-changing requests from
+  other websites, so a page open in your browser cannot reach your files
+  through it.
 - Nothing leaves your machine except metadata queries to MusicBrainz/AcoustID
   and cover art downloads.
 
@@ -381,7 +395,11 @@ is known. The suite includes a false-positive baseline: a clean file must come
 back quiet, or the detectors are not worth having.
 
 Building those fixtures needs `ffmpeg` on your `PATH`. Without it they skip
-rather than fail, taking 118 of the 377 tests out of the run - so a green result
+rather than fail, taking 136 of the 451 tests out of the run - so a green result
 on a machine with no ffmpeg is a weaker signal than it looks.
 [`desktop/build-resources/tools/README.md`](desktop/build-resources/tools/README.md)
 has the download links.
+
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs the whole
+suite, ffmpeg included, on Linux and Windows for every pull request and every
+push to `main`.

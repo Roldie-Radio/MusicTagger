@@ -168,6 +168,25 @@ class TestCommitExport:
         trash = list((Path(cfg.organize_root) / ".musictagger-trash").glob("*.wav"))
         assert len(trash) == 1                       # old file preserved, not deleted
 
+    def test_replace_never_overwrites_an_unrelated_file_at_dest(self, cfg, tmp_path):
+        """The duplicate being replaced can live somewhere other than ``dest``."""
+        duplicate = make_file(Path(cfg.organize_root) / "Old Folder" / "glory box.wav",
+                              title="Glory Box", artist="Portishead")
+        unrelated = make_file(Path(cfg.organize_root) / "Portishead" / "01 - Glory Box.wav",
+                              title="Something Else", artist="Someone Else")
+        before = unrelated.read_bytes()
+        src = make_file(tmp_path / "in" / "a.wav", title="Glory Box", artist="Portishead")
+
+        report = commit_export([{
+            "path": str(src), "dest": str(unrelated), "action": "replace",
+            "existing_path": str(duplicate),
+        }], cfg)
+
+        assert report.exported == 1 and report.replaced == 1
+        assert not duplicate.exists()                        # went to the trash
+        assert unrelated.read_bytes() == before              # untouched
+        assert (unrelated.parent / "01 - Glory Box (2).wav").exists()
+
     def test_failure_on_one_item_does_not_abort_the_batch(self, cfg, tmp_path):
         missing = tmp_path / "in" / "gone.wav"       # never created
         ok = make_file(tmp_path / "in" / "ok.wav", title="Glory Box", artist="Portishead")
