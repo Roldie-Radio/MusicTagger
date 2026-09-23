@@ -19,6 +19,29 @@ JOURNAL_DB = APP_DIR / "journal.db"
 TOOLS_DIR = APP_DIR / "tools"
 
 
+def builtin_acoustid_key() -> str:
+    """The AcoustID application key built into this copy of the app, if any.
+
+    AcoustID issues keys per *application*, not per person, and expects them
+    to ship inside the app (MusicBrainz Picard does the same). This one lets a
+    fresh install fingerprint straight away instead of every machine needing
+    its own key typed into Settings.
+
+    The repository is public, so the key is never committed. The release
+    build writes it into ``musictag/_app_key.py`` (gitignored) from the
+    ``ACOUSTID_API_KEY`` repository secret. ``MUSICTAGGER_ACOUSTID_KEY`` in
+    the environment covers running from source.
+    """
+    env = os.environ.get("MUSICTAGGER_ACOUSTID_KEY", "").strip()
+    if env:
+        return env
+    try:
+        from ._app_key import ACOUSTID_API_KEY
+    except ImportError:
+        return ""
+    return str(ACOUSTID_API_KEY or "").strip()
+
+
 @dataclass
 class Config:
     # --- library ---------------------------------------------------------
@@ -150,12 +173,19 @@ class Config:
     def fpcalc(self) -> str | None:
         return self.resolve_tool("fpcalc", self.fpcalc_path)
 
+    @property
+    def acoustid_key(self) -> str:
+        """The key lookups actually use: yours if set, else the built-in one."""
+        return self.acoustid_api_key.strip() or builtin_acoustid_key()
+
     def capabilities(self) -> dict[str, Any]:
         """What the app can actually do right now, for the UI to show honestly."""
         return {
-            "fingerprinting": bool(self.fpcalc and self.acoustid_api_key.strip()),
+            "fingerprinting": bool(self.fpcalc and self.acoustid_key),
             "fpcalc": self.fpcalc,
             "acoustid_key_set": bool(self.acoustid_api_key.strip()),
+            # Whether fingerprinting works with no key of your own.
+            "acoustid_builtin_key": bool(builtin_acoustid_key()),
             "ffmpeg": self.ffmpeg,
             "ffprobe": self.ffprobe,
             "quality_analysis": bool(self.ffmpeg),

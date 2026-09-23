@@ -279,13 +279,15 @@
           <p class="help">
             Fingerprinting identifies a track from the audio itself, so it works even
             when the file has no tags and a meaningless name. It needs a free AcoustID
-            key and the <code>fpcalc</code> tool. Without them the app falls back to
-            matching on existing tags and filenames.
+            key and the <code>fpcalc</code> tool, both of which the installed app
+            includes. Without them the app falls back to matching on existing tags
+            and filenames.
           </p>
           <label class="field">
             <span>AcoustID API key</span>
             <input type="text" id="cfg_acoustid_api_key" placeholder="Get one free at acoustid.org/new-application">
           </label>
+          <p class="help" id="acoustidHint"></p>
           <div class="field-row">
             <label class="field grow">
               <span>fpcalc path</span>

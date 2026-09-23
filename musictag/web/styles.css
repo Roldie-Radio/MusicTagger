@@ -1286,3 +1286,7 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
   .track-row:not(.is-grid) .cell-expand { grid-area: expand; }
   .header-actions .btn span:not(.icon) { display: none; }
 }
+
+/* The whole row opens its details. */
+.track-row { cursor: pointer; }
+.track-row input, .track-row .cell-check { cursor: default; }

@@ -105,8 +105,10 @@ if they are not already there (never overwriting a tool you already have)-
 this is the same folder `Config.resolve_tool()` in `musictag/config.py`
 already checks first, so no backend code has to know it is running inside a
 packaged app. ffmpeg, ffprobe and quality analysis work immediately with no
-setup. AcoustID fingerprinting still needs your own free API key (Settings →
-Identification) - that part was never a bundling problem to solve.
+setup. Fingerprinting works straight away too: fpcalc is bundled, and the
+release build embeds MusicTagger's AcoustID application key from the
+`ACOUSTID_API_KEY` repository secret. A key entered in Settings →
+Identification still overrides it.
 
 ## Updates
 

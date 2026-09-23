@@ -25,9 +25,23 @@ import numpy as np                                                  # noqa: E402
 import pytest                                                       # noqa: E402
 
 from musictag.config import Config                                  # noqa: E402
+from musictag.config import builtin_acoustid_key                    # noqa: E402
+
+#: The unpatched lookup, for the one test that checks it.
+REAL_BUILTIN_ACOUSTID_KEY = builtin_acoustid_key
 
 SR = 44100
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+@pytest.fixture(autouse=True)
+def no_builtin_acoustid_key(monkeypatch):
+    """Tests decide for themselves whether a key exists.
+
+    A developer with ``musictag/_app_key.py`` or ``MUSICTAGGER_ACOUSTID_KEY``
+    set would otherwise get different results - and real network lookups.
+    """
+    monkeypatch.setattr("musictag.config.builtin_acoustid_key", lambda: "")
+
 
 ffmpeg_required = pytest.mark.skipif(
     shutil.which("ffmpeg") is None, reason="ffmpeg not installed"

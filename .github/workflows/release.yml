@@ -108,6 +108,30 @@ jobs:
           $env:PATH = "$PWD/desktop/build-resources/tools;$env:PATH"
           python -m pytest
 
+      # --- the AcoustID application key -------------------------------------
+      # Built into the installer so fingerprinting works on a fresh install
+      # with nothing typed into Settings. It comes from a repository secret
+      # because the repository is public, and it is written to a gitignored
+      # file. A build without it would ship an app that cannot fingerprint,
+      # which is exactly the bug this exists to fix, so it fails instead.
+      - name: Embed the AcoustID application key
+        shell: bash
+        env:
+          ACOUSTID_API_KEY: ${{ secrets.ACOUSTID_API_KEY }}
+        run: |
+          if [ -z "$ACOUSTID_API_KEY" ]; then
+            echo "::error::Add your AcoustID application key as the ACOUSTID_API_KEY repository secret (Settings -> Secrets and variables -> Actions)."
+            exit 1
+          fi
+          python - <<'PY'
+          import os
+          key = os.environ["ACOUSTID_API_KEY"].strip()
+          with open("musictag/_app_key.py", "w", encoding="utf-8") as f:
+              f.write('"""Written by the release workflow. Never commit this file."""\n')
+              f.write(f"ACOUSTID_API_KEY = {key!r}\n")
+          PY
+          python -c "from musictag.config import builtin_acoustid_key as k; assert k(), 'key not embedded'; print('AcoustID key embedded')"
+
       - name: Freeze the backend
         run: python -m PyInstaller desktop/backend/backend.spec --distpath desktop/dist --workpath desktop/build --noconfirm
 

@@ -565,6 +565,7 @@ function renderGridRow(track) {
   }
 
   row.appendChild(expandCell(track));
+  openOnRowClick(row, track);
   return row;
 }
 
@@ -662,16 +663,39 @@ function selectCell(track, row) {
   return check;
 }
 
+function toggleDetail(path) {
+  state.openPath = state.openPath === path ? null : path;
+  renderTracks();
+}
+
 function expandCell(track) {
   const cell = el('div', 'cell-expand');
   const expand = el('button', 'expand-btn', '›');
   expand.title = 'Show details';
-  expand.addEventListener('click', () => {
-    state.openPath = state.openPath === track.path ? null : track.path;
-    renderTracks();
-  });
+  expand.addEventListener('click', () => toggleDetail(track.path));
   cell.appendChild(expand);
   return cell;
+}
+
+/* A click anywhere on a row opens its details, not just on the small arrow.
+   Controls inside the row keep their own clicks, and so does selecting text.
+   In the grid, double-click edits a cell; toggling on the first click would
+   redraw the row and swallow the second, so the toggle waits a moment and a
+   double-click cancels it. */
+const ROW_CONTROLS = 'button, a, input, select, textarea, label, .cell-check';
+
+function openOnRowClick(row, track) {
+  let timer = null;
+  row.addEventListener('click', (e) => {
+    if (e.target.closest(ROW_CONTROLS)) return;
+    // Cancel first: a double-click also selects the word under it, so the
+    // selection check below would otherwise leave the first click's toggle
+    // pending and it would close the editor the double-click just opened.
+    clearTimeout(timer);
+    if (e.detail > 1) return;
+    if (window.getSelection && String(window.getSelection())) return;
+    timer = setTimeout(() => toggleDetail(track.path), state.view === 'grid' ? 250 : 0);
+  });
 }
 
 function renderTracks() {
@@ -777,6 +801,7 @@ function renderRow(track) {
   row.appendChild(quality);
 
   row.appendChild(expandCell(track));
+  openOnRowClick(row, track);
   return row;
 }
 
@@ -1590,6 +1615,13 @@ async function openSettings() {
   }
 
   const caps = state.config._capabilities || {};
+  // A blank key is fine when the app carries its own - say so, rather than
+  // leave an empty box that looks like something still needs doing.
+  $('#acoustidHint').textContent = caps.acoustid_key_set
+    ? 'Using your own key.'
+    : (caps.acoustid_builtin_key
+      ? 'Using the key built into MusicTagger. Leave blank, or paste your own to use it instead.'
+      : 'No key yet: fingerprinting is off until you add one.');
   $('#fpcalcHint').textContent = caps.fpcalc
     ? `Found: ${caps.fpcalc}`
     : `Not found. The download comes from ${state.config._fpcalc_url || state.config._fpcalc_homepage}.`;

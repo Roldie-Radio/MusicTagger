@@ -43,7 +43,15 @@ browser. Either way the server is local only, bound to `127.0.0.1`.
 | **fpcalc** (Chromaprint) | optional | generates the fingerprints the key looks up |
 
 ffmpeg: <https://ffmpeg.org/download.html> — or `winget install Gyan.FFmpeg`.
-AcoustID key: free, ~2 minutes, at <https://acoustid.org/new-application>.
+AcoustID key: the installed app has one built in, so fingerprinting works with
+nothing to set up. Running from source, get a free one in ~2 minutes at
+<https://acoustid.org/new-application> and paste it into Settings, or set
+`MUSICTAGGER_ACOUSTID_KEY`. A key in Settings always takes precedence.
+
+Maintainers: the release build takes the built-in key from the
+`ACOUSTID_API_KEY` repository secret and writes it to the gitignored
+`musictag/_app_key.py`. It is never committed, and a release build fails
+without it rather than shipping an app that cannot fingerprint.
 `fpcalc`: Settings → Identification has a **Download fpcalc** button that shows
 you the exact URL before fetching anything, or install Chromaprint yourself.
 
