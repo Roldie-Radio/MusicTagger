@@ -19,7 +19,7 @@ from musictag import __version__
 from musictag.config import Config
 from musictag.providers.http import ProviderError
 from musictag.update import (
-    CHECK_RETRIES, CHECK_TIMEOUT, CHECK_TTL_SECONDS, LATEST_RELEASE_API,
+    AUTO_UPDATE_ENV, CHECK_RETRIES, CHECK_TIMEOUT, CHECK_TTL_SECONDS, LATEST_RELEASE_API,
     NOTES_LIMIT, RELEASES_PAGE, _client, check_for_update, parse_version,
 )
 
@@ -238,3 +238,31 @@ class TestVersionSources:
             f"desktop/electron/package.json says {package['version']}, "
             f"musictag/__init__.py says {__version__} - these must match"
         )
+
+
+class TestAutoInstallFlag:
+    """The desktop shell installs updates itself and says so via the env."""
+
+    def test_off_unless_the_shell_says_so(self, cfg, monkeypatch):
+        monkeypatch.delenv(AUTO_UPDATE_ENV, raising=False)
+        info = check_for_update(cfg, client=FakeClient(payload=release()))
+        assert info.auto_install is False
+
+    def test_on_when_the_shell_installs_updates(self, cfg, monkeypatch):
+        monkeypatch.setenv(AUTO_UPDATE_ENV, "1")
+        info = check_for_update(cfg, client=FakeClient(payload=release()))
+        assert info.auto_install is True
+        assert info.to_dict()["auto_install"] is True
+
+    def test_reported_even_when_checking_is_off(self, cfg, monkeypatch):
+        """The UI still needs to describe the right behaviour in Settings."""
+        monkeypatch.setenv(AUTO_UPDATE_ENV, "1")
+        cfg.update_check_enabled = False
+        info = check_for_update(cfg, client=FakeClient(payload=release()))
+        assert info.enabled is False
+        assert info.auto_install is True
+
+    def test_only_an_exact_one_counts(self, cfg, monkeypatch):
+        monkeypatch.setenv(AUTO_UPDATE_ENV, "0")
+        info = check_for_update(cfg, client=FakeClient(payload=release()))
+        assert info.auto_install is False

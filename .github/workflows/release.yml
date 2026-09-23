@@ -1,8 +1,12 @@
 # Builds and publishes the Windows installer.
 #
-# The in-app update check (musictag/update.py) reads GitHub Releases, so this
-# workflow is what makes that feature do anything at all: no release, nothing
-# to find.
+# The in-app update check (musictag/update.py) and the desktop auto-updater
+# (desktop/electron/updater.js) both read GitHub Releases, so this workflow is
+# what makes either do anything at all: no release, nothing to find.
+#
+# electron-builder uploads latest.yml and the installer's .blockmap next to the
+# installer. Those are what installed copies download to learn about, and
+# verify, a new version - a release without them cannot be auto-updated to.
 #
 # Two ways in, because pushing a tag is not always available - some tokens are
 # scoped to refs/heads/ and are refused on refs/tags/:
@@ -16,8 +20,9 @@
 #
 # Either way electron-builder uploads to a DRAFT release, so the installer can
 # be checked before anything becomes public - and until that draft is
-# published, /releases/latest keeps returning 404 and the in-app check keeps
-# correctly reporting that there is nothing to update to.
+# published, nothing sees it: /releases/latest keeps returning 404 and no
+# installed copy updates to it. A manual run with "publish" ticked skips the
+# draft stage and makes the release live as soon as the build succeeds.
 
 name: Release
 
@@ -25,6 +30,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the release straight away instead of leaving a draft'
+        type: boolean
+        default: false
 
 permissions:
   contents: write          # creating the Release is a write to the repo
@@ -108,3 +118,16 @@ jobs:
         run: |
           npm ci
           npm run dist -- --publish always
+
+      # Turns the draft electron-builder just made into a published release,
+      # which creates the tag at the commit this run built. Published is what
+      # installed copies look for, so this is the moment they start updating.
+      - name: Publish the release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(python -c "import musictag; print(musictag.__version__)")
+          gh release edit "v$version" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest --target "$GITHUB_SHA"

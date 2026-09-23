@@ -4,13 +4,15 @@
 // analysis - lives in the Python backend this file spawns as a child process.
 // This file's only jobs are: find the backend and its bundled tools, start
 // the backend, wait for it to be healthy, show a window pointed at it, and
-// shut everything down cleanly when the window closes.
+// shut everything down cleanly when the window closes. Installing updates
+// is updater.js's job.
 
 const { app, BrowserWindow, dialog, shell } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const { startAutoUpdate } = require('./updater');
 
 // A second launch should focus the existing window, not start a second
 // backend fighting over the same sqlite state on a different port.
@@ -91,6 +93,9 @@ function startBackend() {
 
     backendProcess = spawn(exe, [], {
       windowsHide: true,
+      // Tells the backend that updates install themselves here, so the UI
+      // describes what will actually happen instead of linking to a download.
+      env: { ...process.env, MUSICTAGGER_AUTO_UPDATE: app.isPackaged ? '1' : '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -133,13 +138,15 @@ function startBackend() {
 }
 
 function stopBackend() {
-  if (backendProcess && !backendProcess.killed) {
+  if (backendProcess && !backendProcess.killed && !shuttingDown) {
     shuttingDown = true;
     // taskkill /T also takes down anything the backend itself may have
     // spawned (ffmpeg/ffprobe subprocess calls mid-analysis), which a plain
     // process.kill() on Windows does not reliably do for a process tree.
+    // Synchronous, because an update installer runs straight after quit and
+    // cannot replace backend files that are still in use.
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/pid', String(backendProcess.pid), '/T', '/F']);
+      spawnSync('taskkill', ['/pid', String(backendProcess.pid), '/T', '/F'], { windowsHide: true });
     } else {
       backendProcess.kill();
     }
@@ -185,6 +192,11 @@ async function createWindow() {
     const port = await startBackend();
     await waitForHealthy(port);
     await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
+    // Only an installed build has anywhere to update to; running from source
+    // there is no installer to replace.
+    if (app.isPackaged) {
+      startAutoUpdate({ port, getWindow: () => mainWindow, beforeInstall: stopBackend });
+    }
   } catch (err) {
     dialog.showErrorBox('MusicTagger could not start', String(err && err.message || err));
     app.quit();
