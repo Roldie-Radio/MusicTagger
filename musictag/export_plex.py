@@ -88,8 +88,13 @@ class ExportPlan:
 
 
 def plan_export(tracks: list[Track], cfg: Config,
-                 progress: Optional[Callable[[int, int, str], None]] = None) -> ExportPlan:
-    """Compute an export plan. Read-only - nothing on disk changes."""
+                 progress: Optional[Callable[[int, int, str], None]] = None,
+                 cancelled: Optional[Callable[[], bool]] = None) -> ExportPlan:
+    """Compute an export plan. Read-only - nothing on disk changes.
+
+    A cancelled plan is incomplete and must not be shown for review: its
+    duplicate checks ran against only part of the Plex folder.
+    """
     if not cfg.organize_root:
         raise ValueError("No Plex Music folder configured. Set one in Settings first.")
     plex_root = Path(cfg.organize_root)
@@ -103,7 +108,9 @@ def plan_export(tracks: list[Track], cfg: Config,
     destinations = plan_all(ready, cfg)
     plan.ineligible = len(ready) - len(destinations)
 
-    index = build_index(plex_root, progress=progress)
+    index = build_index(plex_root, progress=progress, cancelled=cancelled)
+    if cancelled and cancelled():
+        return plan
     for track in ready:
         dest = destinations.get(track.path)
         if not dest:
@@ -137,7 +144,8 @@ class ExportReport:
 
 
 def commit_export(items: list[dict[str, Any]], cfg: Config,
-                   progress: Optional[Callable[[int, int, str], None]] = None) -> ExportReport:
+                   progress: Optional[Callable[[int, int, str], None]] = None,
+                   cancelled: Optional[Callable[[], bool]] = None) -> ExportReport:
     """Move files according to ``items``.
 
     Each item is ``{"path", "dest", "action", "existing_path"?}`` where
@@ -153,6 +161,10 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
                        something else still occupies ``dest`` the name is
                        disambiguated exactly as for ``"export"``.
     * ``"skip"``     - leave the incoming file where it is; nothing moves.
+
+    ``cancelled`` is checked between files, never partway through one. A
+    cancelled export stops with every file either fully moved (and in the
+    journal, so it can be undone) or still in the ingest folder.
     """
     journal = get_journal()
     report = ExportReport()
@@ -160,6 +172,8 @@ def commit_export(items: list[dict[str, Any]], cfg: Config,
     plex_root = Path(cfg.organize_root) if cfg.organize_root else None
 
     for index, item in enumerate(items):
+        if cancelled and cancelled():
+            break
         path, dest, action = item["path"], item["dest"], item.get("action", "export")
         try:
             source = Path(path)

@@ -120,7 +120,34 @@ class TestPlanExport:
         assert plan.ineligible == 1
 
 
+class TestPlanExportCancel:
+    def test_cancelled_plan_has_no_items(self, cfg, tmp_path):
+        track = make_track(make_file(tmp_path / "in" / "a.wav", title="Glory Box",
+                                     artist="Portishead", album="Dummy"),
+                           current=TrackTags(title="Glory Box", artist="Portishead",
+                                             album="Dummy"))
+        plan = plan_export([track], cfg, cancelled=lambda: True)
+        assert plan.items == []
+
+
 class TestCommitExport:
+    def test_cancel_stops_between_files(self, cfg, tmp_path):
+        items = []
+        for n in range(3):
+            src = make_file(tmp_path / "in" / f"{n}.wav", title=f"Song {n}", artist="Portishead")
+            dest = Path(cfg.organize_root) / "Portishead" / f"0{n} - Song {n}.wav"
+            items.append({"path": str(src), "dest": str(dest), "action": "export"})
+        moved = []
+
+        report = commit_export(items, cfg,
+                               progress=lambda done, total, name: moved.append(name),
+                               cancelled=lambda: len(moved) >= 1)
+        assert report.exported == 1
+        assert report.exported_paths == [items[0]["path"]]
+        # Everything not yet moved is still in the ingest folder.
+        assert Path(items[1]["path"]).exists()
+        assert Path(items[2]["path"]).exists()
+
     def test_export_moves_the_file(self, cfg, tmp_path):
         src = make_file(tmp_path / "in" / "a.wav", title="Glory Box", artist="Portishead")
         dest = Path(cfg.organize_root) / "Portishead" / "01 - Glory Box.wav"

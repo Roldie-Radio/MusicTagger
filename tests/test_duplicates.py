@@ -53,6 +53,25 @@ class TestBuildIndex:
         assert "abc-123" in index.by_mbid
         assert "glory box" in index.by_title
 
+    def test_cancelled_before_reading_indexes_nothing(self, tmp_path):
+        make_file(tmp_path / "a.wav", title="Glory Box", artist="Portishead")
+        index = build_index(tmp_path, cancelled=lambda: True)
+        assert index.count == 0
+
+    def test_cancel_stops_between_files(self, tmp_path):
+        for n in range(5):
+            make_file(tmp_path / f"{n}.wav", title=f"Song {n}", artist="Portishead")
+        reads = []
+
+        def progress(done, total, name):
+            if total:
+                reads.append(name)
+
+        # Let the walk finish, then cancel once two files have been read.
+        index = build_index(tmp_path, progress=progress,
+                            cancelled=lambda: len(reads) >= 2)
+        assert index.count == 2
+
     def test_unreadable_file_does_not_abort_the_scan(self, tmp_path):
         (tmp_path / "junk.wav").write_bytes(b"not a real wav file")
         make_file(tmp_path / "real.wav", title="Glory Box", artist="Portishead")

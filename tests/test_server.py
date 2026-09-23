@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient                     # noqa: E402
 from musictag import server                                   # noqa: E402
 from musictag.jobs import JobManager                           # noqa: E402
 from musictag.config import Config, set_config                # noqa: E402
+from musictag.duplicates import build_index                    # noqa: E402
 from musictag.state import AppState                           # noqa: E402
 
 
@@ -665,7 +666,7 @@ def wait_for_job(client, job_id: str) -> dict:
     status = {}
     for _ in range(200):
         status = client.get(f"/api/jobs/{job_id}").json()
-        if status["status"] in ("done", "error"):
+        if status["status"] in ("done", "error", "cancelled"):
             break
         time.sleep(0.05)
     return status
@@ -719,6 +720,33 @@ class TestExportToPlex:
         assert len(result["items"]) == 1
         assert result["items"][0]["duplicate"] is not None
         assert result["duplicate_count"] == 1
+
+    def test_cancel_stops_reading_the_plex_folder(self, client, tmp_path, monkeypatch):
+        """Cancel used to do nothing here: the index never checked for it."""
+        started = threading.Event()
+
+        def slow_index(root, progress=None, cancelled=None):
+            # Stands in for a huge Plex library: runs until told to stop.
+            started.set()
+            deadline = time.time() + 10
+            while not (cancelled and cancelled()):
+                assert time.time() < deadline, "build_index was never told to stop"
+                time.sleep(0.01)
+            return build_index(root / "nothing-here")
+
+        monkeypatch.setattr("musictag.export_plex.build_index", slow_index)
+        track = make_ready_file(tmp_path / "in" / "a.wav", title="Glory Box",
+                                artist="Portishead", album="Dummy")
+        client.state.add([track])
+
+        job = client.post("/api/export/plan", json={"paths": [track.path]}).json()
+        assert started.wait(5)
+        assert client.post(f"/api/jobs/{job['id']}/cancel").json()["cancelled"] is True
+
+        status = wait_for_job(client, job["id"])
+        assert status["status"] == "cancelled"
+        # A plan from half an index would miss duplicates; none is offered.
+        assert status["result"] is None
 
     def test_commit_requires_items(self, client):
         response = client.post("/api/export/commit", json={"items": []})
