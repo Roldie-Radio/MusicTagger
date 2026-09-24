@@ -27,8 +27,12 @@ import pytest                                                       # noqa: E402
 from musictag.config import Config                                  # noqa: E402
 from musictag.config import builtin_acoustid_key                    # noqa: E402
 
+from musictag.providers.musicbrainz import MusicBrainzClient      # noqa: E402
+
 #: The unpatched lookup, for the one test that checks it.
 REAL_BUILTIN_ACOUSTID_KEY = builtin_acoustid_key
+#: The unpatched genre lookup, for the tests of the lookup itself.
+REAL_GENRE_FOR = MusicBrainzClient.genre_for
 
 SR = 44100
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -41,6 +45,13 @@ def no_builtin_acoustid_key(monkeypatch):
     set would otherwise get different results - and real network lookups.
     """
     monkeypatch.setattr("musictag.config.builtin_acoustid_key", lambda: "")
+
+
+@pytest.fixture(autouse=True)
+def no_genre_lookups(monkeypatch):
+    """Genre lookups are real network calls; tests that want one stub it."""
+    monkeypatch.setattr("musictag.providers.musicbrainz.MusicBrainzClient.genre_for",
+                        lambda self, tags: None)
 
 
 ffmpeg_required = pytest.mark.skipif(

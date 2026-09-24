@@ -68,6 +68,20 @@ class MusicBrainzClient:
             cache_key=f"mb:release:{mbid}",
         )
 
+    def lookup_release_group(self, mbid: str) -> Optional[dict[str, Any]]:
+        return self.http.get_json(
+            f"{BASE}/release-group/{mbid}",
+            {"inc": "genres", "fmt": "json"},
+            cache_key=f"mb:release-group:genres:{mbid}",
+        )
+
+    def lookup_artist(self, mbid: str) -> Optional[dict[str, Any]]:
+        return self.http.get_json(
+            f"{BASE}/artist/{mbid}",
+            {"inc": "genres", "fmt": "json"},
+            cache_key=f"mb:artist:genres:{mbid}",
+        )
+
     def search_recordings(self, *, title: Optional[str], artist: Optional[str] = None,
                           album: Optional[str] = None, duration_s: Optional[float] = None,
                           limit: int = 10) -> list[dict[str, Any]]:
@@ -154,6 +168,24 @@ class MusicBrainzClient:
             tags.album_artist = tags.artist
         return tags, summary
 
+    def genre_for(self, tags: TrackTags) -> Optional[str]:
+        """The top-voted MusicBrainz genre for a matched track, or ``None``.
+
+        Taken from the release group first, so every track on an album gets
+        the same genre and Plex does not show one album under three. Only
+        when the album has no genres does it fall back to the album artist -
+        never to "Various Artists", whose genres describe nothing. Genres
+        are community votes, so a single stray vote is not enough.
+        """
+        if tags.mb_release_group_id:
+            genre = _top_genre(self.lookup_release_group(tags.mb_release_group_id))
+            if genre:
+                return genre
+        artist_id = tags.mb_album_artist_id or tags.mb_artist_id
+        if artist_id and artist_id != VARIOUS_ARTISTS_MBID:
+            return _top_genre(self.lookup_artist(artist_id))
+        return None
+
     def full_release_tracklist(self, release_mbid: str) -> list[dict[str, Any]]:
         """Every track on a release, flattened across discs.
 
@@ -196,6 +228,44 @@ def _escape(text: str) -> str:
             out.append("\\")
         out.append(ch)
     return "".join(out)
+
+
+#: Genres below this many votes are one person's opinion, not a consensus.
+MIN_GENRE_VOTES = 2
+
+#: Words kept lower case inside a genre name ("Drum and Bass").
+_GENRE_SMALL_WORDS = {"and", "of", "the", "n", "'n'", "in", "de"}
+#: Written in capitals rather than title case.
+_GENRE_ACRONYMS = {"uk": "UK", "us": "US", "edm": "EDM", "idm": "IDM", "ebm": "EBM",
+                   "r&b": "R&B", "dj": "DJ", "nwobhm": "NWOBHM", "aor": "AOR"}
+
+
+def _top_genre(entity: Optional[dict[str, Any]]) -> Optional[str]:
+    """The most-voted genre on a MusicBrainz entity, display-cased."""
+    genres = [g for g in (entity or {}).get("genres") or []
+              if g.get("name") and (g.get("count") or 0) >= MIN_GENRE_VOTES]
+    if not genres:
+        return None
+    # Ties go alphabetically, so the same data always gives the same answer.
+    best = min(genres, key=lambda g: (-g["count"], g["name"]))
+    return _genre_display(best["name"])
+
+
+def _genre_display(name: str) -> str:
+    """``"alternative rock"`` -> ``"Alternative Rock"``; ``"k-pop"`` -> ``"K-Pop"``.
+
+    MusicBrainz stores genre names in lower case; tags read better, and match
+    what most libraries already hold, in title case.
+    """
+    def word(w: str, first: bool) -> str:
+        if w in _GENRE_ACRONYMS:
+            return _GENRE_ACRONYMS[w]
+        if not first and w in _GENRE_SMALL_WORDS:
+            return w
+        return "-".join(part[:1].upper() + part[1:] for part in w.split("-"))
+
+    words = name.strip().lower().split()
+    return " ".join(word(w, i == 0) for i, w in enumerate(words))
 
 
 def _int_or_none(value: Any) -> Optional[int]:

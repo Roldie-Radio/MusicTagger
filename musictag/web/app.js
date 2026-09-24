@@ -1595,7 +1595,7 @@ async function loadPicker(path) {
 const CONFIG_FIELDS = [
   'acoustid_api_key', 'fpcalc_path', 'musicbrainz_contact', 'musicbrainz_rate_limit',
   'auto_apply_threshold', 'review_threshold', 'preserve_existing_tags',
-  'write_cover_art', 'write_cover_file', 'write_musicbrainz_ids', 'id3v2_version',
+  'write_cover_art', 'write_cover_file', 'write_musicbrainz_ids', 'fetch_genres', 'id3v2_version',
   'various_artists_name', 'organize_enabled', 'organize_mode', 'organize_root',
   'folder_template', 'file_template', 'ffmpeg_path', 'quality_workers',
   'quality_max_seconds', 'update_check_enabled',
