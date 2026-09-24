@@ -62,7 +62,8 @@ WEIGHTS = {
 
 #: How much we trust each field once a candidate is chosen. Track/disc numbers
 #: come from a specific release and can be wrong even when the recording is
-#: right; genre is not something MusicBrainz gives us directly at all.
+#: right; genre is a community vote on the album or artist, not a fact about
+#: this recording, so it is the least certain thing we write.
 FIELD_RELIABILITY = {
     "title": 1.00,
     "artist": 0.98,
@@ -783,15 +784,30 @@ class Matcher:
                     best = alt
                     result.chosen_index = rank
                     break
+        self._fill_genre(best)
         result.proposed = self._build_proposal(track, best)
         result.field_confidence = self._field_confidence(result.confidence, observed, best)
         return result
+
+    def _fill_genre(self, cand: Candidate) -> None:
+        """Look up a genre for the chosen candidate, if MusicBrainz has one.
+
+        One or two extra lookups per album, not per track: they are keyed by
+        release group and artist, so the cache answers for every track after
+        the first. A failure here costs the genre, never the match.
+        """
+        if not self.cfg.fetch_genres or cand.tags.genre:
+            return
+        try:
+            cand.tags.genre = self.mb.genre_for(cand.tags)
+        except ProviderError as exc:
+            log.debug("Could not fetch a genre for %s: %s", cand.raw_id, exc)
 
     def _build_proposal(self, track: Track, cand: Candidate) -> TrackTags:
         """Combine the candidate with what is already on the file."""
         proposed = TrackTags(**cand.tags.to_dict())
 
-        # Genre never comes from our MusicBrainz queries, so keep the existing one.
+        # MusicBrainz may have no genre for this album, so keep the existing one.
         if not proposed.genre and track.current.genre:
             proposed.genre = track.current.genre
         if not proposed.composer and track.current.composer:
@@ -878,6 +894,15 @@ class Matcher:
 
         assignment = _seat_on_tracklist(matched, tracklist)
 
+        # Tracks that arrived from other releases carry those releases'
+        # genres. The album's own genre is one cached lookup away.
+        album_genre = None
+        if self.cfg.fetch_genres:
+            try:
+                album_genre = self.mb.genre_for(release_tags_sample)
+            except ProviderError:
+                pass
+
         realigned = 0
         for index, track in enumerate(matched):
             if index not in assignment:
@@ -894,6 +919,8 @@ class Matcher:
             proposed.compilation = release_tags_sample.compilation
             proposed.date = release_tags_sample.date
             proposed.year = release_tags_sample.year
+            if album_genre and not (self.cfg.preserve_existing_tags and track.current.genre):
+                proposed.genre = album_genre
             proposed.track_no = entry.get("track_no") or proposed.track_no
             proposed.track_total = entry.get("track_total") or proposed.track_total
             proposed.disc_no = entry.get("disc_no") or proposed.disc_no

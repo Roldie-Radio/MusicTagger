@@ -100,6 +100,16 @@ Also written: embedded cover art (plus `cover.jpg` in the album folder, which is
 Plex's fallback), disc numbers with totals, and MusicBrainz IDs so a future
 re-tag is exact rather than another guess.
 
+**Genre** comes from MusicBrainz's community genre votes: the top-voted genre
+for the *album* (release group), so every track on an album gets the same one
+and Plex doesn't file it under three. If the album has no genres, the album
+artist's top genre is used instead, but never the genre of "Various Artists".
+A genre needs at least two votes, so one person's opinion doesn't count. If
+MusicBrainz has nothing, the file's existing genre is kept. Genre is the
+least certain field written and its confidence reflects that. Turn it off
+under Settings → Plex → Tag writing, or turn on *Only fill in blank fields* to
+keep genres you set by hand.
+
 Default layout, both templates configurable:
 
 ```

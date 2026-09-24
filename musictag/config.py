@@ -66,6 +66,7 @@ class Config:
     cover_filename: str = "cover.jpg"
     id3v2_version: int = 4                    # 3 or 4; Plex reads both, 4 is the modern default
     write_musicbrainz_ids: bool = True
+    fetch_genres: bool = True                 # top-voted MusicBrainz genre for the album
     various_artists_name: str = "Various Artists"
 
     # --- organisation (opt-in) -------------------------------------------

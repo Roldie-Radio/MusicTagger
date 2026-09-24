@@ -646,6 +646,7 @@ def api_choose(req: ChooseRequest) -> dict[str, Any]:
     # picked, so a runner-up needs its album and track details fetched now -
     # otherwise choosing it would write tags with the album missing.
     matcher._enrich(chosen)
+    matcher._fill_genre(chosen)
     track.match.proposed = matcher._build_proposal(track, chosen)
     # A human picked it, so the fields are as good as the candidate's own score.
     track.match.field_confidence = {k: chosen.confidence for k in track.match.field_confidence}
