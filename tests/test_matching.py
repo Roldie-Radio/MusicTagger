@@ -327,6 +327,73 @@ class TestFinish:
         together = self._pair(matcher, track, observed)      # identical tags
         assert together == alone
 
+    def test_candidates_are_listed_at_the_confidence_they_would_give(self, matcher):
+        """An untagged file is capped at 60%. Its candidates match the filename
+        perfectly, so their raw scores are ~100% - and listing those beside a
+        60% headline, then handing out 100% when one was picked, is the
+        contradiction this pins down."""
+        track = Track(path=music_path("Portishead", "Dummy", "Glory Box.mp3"))
+        track.filename = "Glory Box.mp3"
+        track.current = TrackTags()
+        track.props = AudioProps(duration_s=301.0)
+        observed = matcher._observations(track)
+        result = matcher._finish(
+            track, observed,
+            [make_candidate(),
+             _with_id(make_candidate(album="Dummy (Remastered)", length_s=303.0),
+                      "remaster")], [], [])
+
+        assert result.confidence <= 60
+        assert all(c.match_score > 90 for c in result.candidates), \
+            "the raw match is still recorded, for ranking and the tooltip"
+        assert all(c.confidence <= result.confidence for c in result.candidates)
+        assert result.candidates[result.chosen_index].confidence == result.confidence
+
+    def test_a_close_runner_up_is_never_listed_above_the_winner(self, matcher):
+        """Near-tie doubt applies both ways: if the winner is in question, so
+        is the candidate it barely beat."""
+        track, observed = self._titleless_setup(matcher)
+        result = matcher._finish(
+            track, observed,
+            [make_candidate(length_s=355.0),
+             _with_id(make_candidate(length_s=355.0, artist="Vitamin String Quartet",
+                                     album="VSQ Performs Portishead"), "other")], [], [])
+        best, runner_up = result.candidates
+        # A near tie, not an exact one: Windows reads the setup's path as a
+        # file inside a "Music" folder, which nudges the two scores apart.
+        assert best.match_score - runner_up.match_score < 1
+        assert runner_up.confidence <= best.confidence == result.confidence
+        assert runner_up.confidence < runner_up.match_score
+
+    @staticmethod
+    def _unverified_winner():
+        best = make_candidate()
+        best.duration_unverified = True
+        return [best, _with_id(make_candidate(album="Dummy (Remastered)",
+                                              length_s=303.0), "remaster")]
+
+    @pytest.mark.parametrize("candidates", [
+        # A fingerprint outranks text, so it wins even though the database's
+        # title and length for it disagree with the file's tags...
+        lambda: [make_candidate("acoustid", fingerprint=0.81,
+                                title="Glory Box (Live at Roseland)",
+                                album="Roseland NYC Live", length_s=400.0),
+                 _with_id(make_candidate(), "studio")],
+        lambda: [make_candidate("acoustid", fingerprint=0.81, title="Untitled",
+                                artist="Unknown", album=None, length_s=200.0),
+                 _with_id(make_candidate(), "studio")],
+        # ...and a winner found only by a widened search is capped at 75%,
+        # lower than a runner-up whose length was checked.
+        _unverified_winner,
+    ], ids=["live-fingerprint", "mislabelled-fingerprint", "unverified-length"])
+    def test_the_headline_is_the_highest_number_listed(self, matcher, candidates):
+        """Each of these used to list a lower-ranked alternative above the
+        track's own number, because its evidence ceiling was higher."""
+        track = make_track(path=music_path("Portishead", "Dummy", "10 - Glory Box.flac"))
+        result = matcher._finish(track, matcher._observations(track), candidates(), [], [])
+        assert max(c.confidence for c in result.candidates) == result.confidence
+        assert result.candidates[result.chosen_index].confidence == result.confidence
+
     def test_no_candidates_gives_zero_and_says_why(self, matcher):
         track = make_track()
         result = matcher._finish(track, matcher._observations(track), [], [], [])
@@ -477,6 +544,22 @@ class TestAlbumConsolidation:
         monkeypatch.setattr(matcher.mb, "full_release_tracklist", lambda mbid: tracklist)
         matcher._consolidate_album(tracks)
         assert all(t.match.confidence <= 97.0 for t in tracks)
+
+    def test_the_chosen_candidate_keeps_up_with_the_album_boost(self, matcher, monkeypatch):
+        tracks = self._album(matcher, ["r1"] * 4)
+        tracklist = [
+            {"recording": {"id": f"rec{i}"}, "title": f"Song {i}", "length_ms": 301000,
+             "track_no": i, "track_total": 4, "disc_no": 1, "disc_total": 1,
+             "artist_credit": None}
+            for i in range(1, 5)
+        ]
+        monkeypatch.setattr(matcher.mb, "full_release_tracklist", lambda mbid: tracklist)
+        before = [t.match.confidence for t in tracks]
+        matcher._consolidate_album(tracks)
+        for track, was in zip(tracks, before):
+            assert track.match.confidence > was
+            assert track.match.candidates[track.match.chosen_index].confidence \
+                == track.match.confidence
 
 
 class TestConsolidationSeating:

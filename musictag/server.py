@@ -641,6 +641,8 @@ def api_choose(req: ChooseRequest) -> dict[str, Any]:
     matcher = Matcher(cfg)
     chosen = track.match.candidates[req.candidate_index]
     track.match.chosen_index = req.candidate_index
+    # Already rated as if chosen (Matcher._rate), so the same ambiguity and
+    # evidence cap the headline was held to apply here too.
     track.match.confidence = chosen.confidence
     # Fingerprint candidates carry only what AcoustID returned until one is
     # picked, so a runner-up needs its album and track details fetched now -

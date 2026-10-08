@@ -76,6 +76,17 @@ class TestPersistence:
         assert restored.match.confidence == 88.0
         assert restored.match.proposed.title == "New"
 
+    def test_a_saved_match_never_lists_a_candidate_above_the_track(self):
+        """Saved by an older version, the candidates carry raw scores: a 60%
+        track listed 100% and 99%. Loading it must not show that again."""
+        old = {"confidence": 60.0, "chosen_index": 0, "candidates": [
+            {"source": "musicbrainz-search", "confidence": 100.0},
+            {"source": "musicbrainz-search", "confidence": 99.0},
+        ]}
+        match = MatchResult.from_dict(old)
+        assert [c.confidence for c in match.candidates] == [60.0, 60.0]
+        assert [c.match_score for c in match.candidates] == [100.0, 99.0]
+
     def test_rescanning_an_unchanged_file_keeps_its_results(self, state, store):
         """The regression: a re-scan used to wipe stored quality and matches.
 

@@ -238,6 +238,22 @@ class TestEditing:
                                json={"path": "C:/nope.mp3", "tags": {"title": "x"}})
         assert response.status_code == 404
 
+    def test_choosing_a_candidate_gives_the_confidence_it_was_listed_at(self, client):
+        """Not its raw match score: a perfect match to a guessed filename was
+        listed at the 60% cap, and picking it must not quietly make it 100%."""
+        from musictag.models import Candidate
+        track = add_track(client.state, confidence=60.0)
+        track.match.candidates = [
+            Candidate(source="musicbrainz-search", confidence=60.0, match_score=100.0,
+                      tags=TrackTags(title="Song", artist="Artist")),
+            Candidate(source="musicbrainz-search", confidence=55.0, match_score=99.0,
+                      tags=TrackTags(title="Song", artist="Someone Else")),
+        ]
+        data = client.post("/api/track/choose",
+                           json={"path": track.path, "candidate_index": 1}).json()
+        assert data["match"]["confidence"] == 55.0
+        assert data["match"]["candidates"][1]["match_score"] == 99.0
+
     def test_choosing_a_candidate_out_of_range_is_rejected(self, client):
         track = add_track(client.state)
         response = client.post("/api/track/choose",
