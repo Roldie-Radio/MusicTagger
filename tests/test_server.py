@@ -915,6 +915,14 @@ class TestJobConflicts:
 
 
 class TestClearAndUndoGuards:
+    def test_clear_empties_the_track_list(self, client):
+        """What the Clear all button relies on."""
+        add_track(client.state, "C:/M/a.mp3")
+        add_track(client.state, "C:/M/b.mp3")
+        assert client.post("/api/clear").status_code == 200
+        assert client.get("/api/status").json()["stats"]["total"] == 0
+        assert client.get("/api/tracks").json()["tracks"] == []
+
     def test_clear_is_refused_while_a_job_is_working_on_the_tracks(self, client):
         release = threading.Event()
         jobs = server.get_jobs()

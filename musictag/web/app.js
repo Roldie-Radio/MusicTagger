@@ -1298,6 +1298,7 @@ async function refreshStatus() {
     $('#btnQuality').disabled = state.status.stats.total === 0
       || !state.status.capabilities.quality_analysis;
     $('#btnExport').disabled = state.status.stats.total === 0;
+    $('#btnClearAll').disabled = state.status.stats.total === 0;
     if (state.config && state.config.library_paths.length) {
       $('#libraryLabel').textContent = state.config.library_paths.join('  ·  ');
     }
@@ -1884,6 +1885,32 @@ function wire() {
     startJob('/api/quality', { paths, only_pending: paths.length === 0 });
   });
   $('#btnExport').addEventListener('click', openExportFlow);
+  $('#btnClearAll').addEventListener('click', async () => {
+    const total = state.status ? state.status.stats.total : 0;
+    if (!total || !confirm(
+      `Clear all ${total} track(s) from MusicTagger?\n\n`
+      + 'This empties the list, including matches and edits not yet applied to '
+      + 'your files. Nothing on your disk is touched - choose the folder again '
+      + 'to re-scan it.'
+    )) {
+      return;
+    }
+    try {
+      await api('/api/clear', { method: 'POST' });
+    } catch (err) {
+      // Refused while a job is working on the tracks; the message says which.
+      toast(err.message, 'error');
+      return;
+    }
+    // Everything below pointed at tracks that no longer exist.
+    state.selected.clear();
+    state.openPath = null;
+    state.offset = 0;
+    state.exportPlan = null;
+    state.exportResolutions = {};
+    toast('Track list cleared.', 'success');
+    await refreshAll();
+  });
   $('#btnExportCommit').addEventListener('click', commitExportPlan);
   $('#btnCancelJob').addEventListener('click', () => {
     if (state.activeJobId) api(`/api/jobs/${state.activeJobId}/cancel`, { method: 'POST' });
