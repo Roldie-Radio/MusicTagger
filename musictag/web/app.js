@@ -996,6 +996,15 @@ function renderDetail(track) {
       const score = el('div', `cand-score ${confClass(cand.confidence)}`,
         `${Math.round(cand.confidence)}%`);
       score.style.color = `var(--${confClass(cand.confidence).slice(2)})`;
+      // The listed number is the confidence this file gets if the candidate
+      // is picked. How closely the entry itself matched can be higher - a
+      // perfect match to a guessed filename is still a guess.
+      if (cand.match_score != null && Math.round(cand.confidence) < Math.round(cand.match_score)) {
+        score.title = `Matches the file ${Math.round(cand.match_score)}%. Picking it gives `
+          + `${Math.round(cand.confidence)}% - lower because another candidate is close, `
+          + 'the file has too little information to check the match against, '
+          + 'or it ranks below the top match.';
+      }
       node.appendChild(score);
       const body = el('div', 'cand-body');
       body.appendChild(el('div', 'cand-title', cand.tags.title || '(untitled)'));

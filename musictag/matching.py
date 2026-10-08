@@ -701,17 +701,17 @@ class Matcher:
         # exactly once per surviving candidate.
         candidates = _dedupe_candidates(candidates)
         for cand in candidates:
-            cand.confidence = round(self._score(cand, observed), 1)
+            cand.match_score = round(self._score(cand, observed), 1)
         # Audio evidence outranks text evidence, always. An AcoustID hit says
         # "this audio *is* this recording"; a search hit only says "a recording
-        # with this title exists". Ranking on confidence alone let a cover
+        # with this title exists". Ranking on match score alone let a cover
         # version that happened to score a flat 1.00 on title and length beat
         # the fingerprinted original - whose own 0.98 fingerprint score pulled
         # its weighted average *down* relative to that perfect 1.00. The
         # strongest evidence available was penalised for not being certain,
         # which is exactly backwards.
         candidates.sort(
-            key=lambda c: (_fingerprint_score(c) >= STRONG_FINGERPRINT, c.confidence),
+            key=lambda c: (_fingerprint_score(c) >= STRONG_FINGERPRINT, c.match_score),
             reverse=True)
         candidates = candidates[: self.cfg.max_candidates]
 
@@ -724,47 +724,26 @@ class Matcher:
                                 "or fix the filename so a text search can work.")
             return result
 
+        # Every candidate is rated by the same rules as the winner, so the
+        # number beside an alternative is the number the track gets if that
+        # alternative is picked. Showing raw match scores there instead had a
+        # track headed "60% Uncertain" list its options at 100% and 99% - and
+        # picking one then skipped the cap the headline had been held to.
+        for index, cand in enumerate(candidates):
+            rival = candidates[1 if index == 0 else 0] if len(candidates) > 1 else None
+            cand.confidence, why = self._rate(cand, rival, observed, leads=index == 0)
+            if index == 0:
+                result.notes.extend(why)
+
         best = candidates[0]
-        confidence = best.confidence
-
-        # Ambiguity: a close runner-up means the top answer is less certain -
-        # but only when it is genuinely a *different* answer. The same
-        # recording reissued on a greatest-hits, and a cover version beaten by
-        # a fingerprinted original, both used to trip this and quietly knock
-        # 20% off a match that was not actually in doubt.
-        if len(candidates) > 1:
-            runner_up = candidates[1]
-            margin = best.confidence - runner_up.confidence
-            fingerprint_settles_it = (_fingerprint_score(best) >= STRONG_FINGERPRINT
-                                      > _fingerprint_score(runner_up))
-            if (margin < 12 and runner_up.raw_id != best.raw_id
-                    and not fingerprint_settles_it
-                    and not _same_answer(best, runner_up)):
-                # How much doubt a near-tie deserves depends on what the two
-                # candidates actually disagree about. "The Beatles" on Let It
-                # Be versus the same performance on a compilation is a real
-                # question, but a far smaller one than The Beatles versus
-                # Aretha Franklin - the song is already settled, only the
-                # release is open. Charging both the same penalty buried
-                # correct matches in the review pile for no good reason.
-                same_song = _same_recording(best, runner_up)
-                floor = 0.95 if same_song else 0.80
-                factor = floor + (margin / 12.0) * (1.0 - floor)
-                confidence *= factor
-                what = "which release this came from is unclear" if same_song \
-                    else "confidence reduced for ambiguity"
-                result.notes.append(
-                    f"Second-best candidate scores {runner_up.confidence:.0f}% "
-                    f"({runner_up.release_summary or 'unnamed'}) - {what}.")
-
-        # Evidence ceiling: we cannot be sure of a guess we could not check.
-        ceiling = _evidence_ceiling(observed, best)
-        if confidence > ceiling:
-            result.notes.append(
-                f"Capped at {ceiling:.0f}% - too little existing information to verify the match.")
-            confidence = ceiling
-
-        result.confidence = round(max(0.0, min(100.0, confidence)), 1)
+        # The track's number is the highest in its list. The ranking decides
+        # which answer is likeliest - it puts a fingerprinted recording above a
+        # better-worded text match on purpose - so nothing it ranked lower can
+        # be the answer we are surest of. Without this, an alternative with a
+        # higher evidence ceiling than the winner could be listed above it.
+        for cand in candidates[1:]:
+            cand.confidence = min(cand.confidence, best.confidence)
+        result.confidence = best.confidence
         result.chosen_index = 0
         # Only now, once one candidate has actually won, is it worth spending a
         # round trip on the album and track details needed to write tags.
@@ -780,12 +759,69 @@ class Matcher:
                     continue
                 self._enrich(alt)
                 if alt.tags.album:
+                    alt.confidence = result.confidence
                     best = alt
                     result.chosen_index = rank
                     break
         result.proposed = self._build_proposal(track, best)
         result.field_confidence = self._field_confidence(result.confidence, observed, best)
         return result
+
+    def _rate(self, cand: Candidate, rival: Optional[Candidate], observed: dict[str, Any],
+              *, leads: bool) -> tuple[float, list[str]]:
+        """How sure we would be if ``cand`` were the answer, and why.
+
+        Starts from its match score and applies the two adjustments the module
+        docstring describes: doubt from a close rival, and the evidence
+        ceiling. ``rival`` is the strongest other candidate, and ``leads`` says
+        whether ``cand`` is ranked above it.
+        """
+        confidence = cand.match_score or 0.0
+        notes: list[str] = []
+
+        # Ambiguity: a close runner-up means the top answer is less certain -
+        # but only when it is genuinely a *different* answer. The same
+        # recording reissued on a greatest-hits, and a cover version beaten by
+        # a fingerprinted original, both used to trip this and quietly knock
+        # 20% off a match that was not actually in doubt.
+        if rival is not None:
+            # A candidate ranked below its rival has no lead, whatever the raw
+            # scores say: the ranking already weighed the fingerprint, which
+            # the score alone does not.
+            margin = (cand.match_score or 0.0) - (rival.match_score or 0.0) if leads else 0.0
+            fingerprint_settles_it = (_fingerprint_score(cand) >= STRONG_FINGERPRINT
+                                      > _fingerprint_score(rival))
+            if (margin < 12 and rival.raw_id != cand.raw_id
+                    and not fingerprint_settles_it
+                    and not _same_answer(cand, rival)):
+                # How much doubt a near-tie deserves depends on what the two
+                # candidates actually disagree about. "The Beatles" on Let It
+                # Be versus the same performance on a compilation is a real
+                # question, but a far smaller one than The Beatles versus
+                # Aretha Franklin - the song is already settled, only the
+                # release is open. Charging both the same penalty buried
+                # correct matches in the review pile for no good reason.
+                same_song = _same_recording(cand, rival)
+                floor = 0.95 if same_song else 0.80
+                factor = floor + (margin / 12.0) * (1.0 - floor)
+                confidence *= factor
+                what = "which release this came from is unclear" if same_song \
+                    else "confidence reduced for ambiguity"
+                # No percentage quoted: the runner-up's own listed number has
+                # had this same doubt applied, so its raw score would not
+                # match anything else on screen.
+                notes.append(
+                    f"Second-best candidate ({rival.release_summary or 'unnamed'}) "
+                    f"matches almost as well - {what}.")
+
+        # Evidence ceiling: we cannot be sure of a guess we could not check.
+        ceiling = _evidence_ceiling(observed, cand)
+        if confidence > ceiling:
+            notes.append(
+                f"Capped at {ceiling:.0f}% - too little existing information to verify the match.")
+            confidence = ceiling
+
+        return round(max(0.0, min(100.0, confidence)), 1), notes
 
     def _build_proposal(self, track: Track, cand: Candidate) -> TrackTags:
         """Combine the candidate with what is already on the file."""
@@ -911,6 +947,9 @@ class Matcher:
             # but never claim certainty a single track did not earn.
             boost = 8.0 * share
             match.confidence = round(min(97.0, match.confidence + boost), 1)
+            # The chosen candidate's listed number is the headline; keep it so.
+            if 0 <= match.chosen_index < len(match.candidates):
+                match.candidates[match.chosen_index].confidence = match.confidence
             match.field_confidence["album"] = round(min(98.0, max(
                 match.field_confidence.get("album", 0), 70 + 25 * share)), 1)
             match.field_confidence["album_artist"] = match.field_confidence["album"]
