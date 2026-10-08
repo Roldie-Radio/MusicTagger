@@ -736,6 +736,13 @@ class Matcher:
                 result.notes.extend(why)
 
         best = candidates[0]
+        # The track's number is the highest in its list. The ranking decides
+        # which answer is likeliest - it puts a fingerprinted recording above a
+        # better-worded text match on purpose - so nothing it ranked lower can
+        # be the answer we are surest of. Without this, an alternative with a
+        # higher evidence ceiling than the winner could be listed above it.
+        for cand in candidates[1:]:
+            cand.confidence = min(cand.confidence, best.confidence)
         result.confidence = best.confidence
         result.chosen_index = 0
         # Only now, once one candidate has actually won, is it worth spending a

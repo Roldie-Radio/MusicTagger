@@ -1002,7 +1002,8 @@ function renderDetail(track) {
       if (cand.match_score != null && Math.round(cand.confidence) < Math.round(cand.match_score)) {
         score.title = `Matches the file ${Math.round(cand.match_score)}%. Picking it gives `
           + `${Math.round(cand.confidence)}% - lower because another candidate is close, `
-          + 'or the file has too little information to check the match against.';
+          + 'the file has too little information to check the match against, '
+          + 'or it ranks below the top match.';
       }
       node.appendChild(score);
       const body = el('div', 'cand-body');

@@ -365,6 +365,35 @@ class TestFinish:
         assert runner_up.confidence <= best.confidence == result.confidence
         assert runner_up.confidence < runner_up.match_score
 
+    @staticmethod
+    def _unverified_winner():
+        best = make_candidate()
+        best.duration_unverified = True
+        return [best, _with_id(make_candidate(album="Dummy (Remastered)",
+                                              length_s=303.0), "remaster")]
+
+    @pytest.mark.parametrize("candidates", [
+        # A fingerprint outranks text, so it wins even though the database's
+        # title and length for it disagree with the file's tags...
+        lambda: [make_candidate("acoustid", fingerprint=0.81,
+                                title="Glory Box (Live at Roseland)",
+                                album="Roseland NYC Live", length_s=400.0),
+                 _with_id(make_candidate(), "studio")],
+        lambda: [make_candidate("acoustid", fingerprint=0.81, title="Untitled",
+                                artist="Unknown", album=None, length_s=200.0),
+                 _with_id(make_candidate(), "studio")],
+        # ...and a winner found only by a widened search is capped at 75%,
+        # lower than a runner-up whose length was checked.
+        _unverified_winner,
+    ], ids=["live-fingerprint", "mislabelled-fingerprint", "unverified-length"])
+    def test_the_headline_is_the_highest_number_listed(self, matcher, candidates):
+        """Each of these used to list a lower-ranked alternative above the
+        track's own number, because its evidence ceiling was higher."""
+        track = make_track(path=music_path("Portishead", "Dummy", "10 - Glory Box.flac"))
+        result = matcher._finish(track, matcher._observations(track), candidates(), [], [])
+        assert max(c.confidence for c in result.candidates) == result.confidence
+        assert result.candidates[result.chosen_index].confidence == result.confidence
+
     def test_no_candidates_gives_zero_and_says_why(self, matcher):
         track = make_track()
         result = matcher._finish(track, matcher._observations(track), [], [], [])

@@ -142,7 +142,8 @@ class Candidate:
     source: str                                  # "acoustid", "musicbrainz-search", "existing-tags"
     #: 0..100: how sure we would be if this were the answer - the track's
     #: confidence if this candidate is picked, ambiguity and evidence cap
-    #: included. While scoring is still under way it holds the raw score.
+    #: included, and never above the top-ranked candidate's. While scoring is
+    #: still under way it holds the raw score.
     confidence: float = 0.0
     #: 0..100: how closely this entry agrees with the file, before ambiguity
     #: and the evidence cap. Ranks the candidates; never shown as confidence.
@@ -206,7 +207,7 @@ class MatchResult:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MatchResult":
-        return cls(
+        result = cls(
             confidence=data.get("confidence", 0.0),
             field_confidence=data.get("field_confidence", {}) or {},
             proposed=TrackTags.from_dict(data.get("proposed", {})),
@@ -215,6 +216,17 @@ class MatchResult:
             method=data.get("method", ""),
             notes=data.get("notes", []) or [],
         )
+        # Saved before candidates carried a rating of their own: each one's
+        # confidence is its raw score, which can sit far above the track's
+        # (a 60% track listing 100% and 99%). The track's number is the most
+        # the saved data can still justify, so cap them there; identifying
+        # the file again rates each one properly.
+        for index, cand in enumerate(result.candidates):
+            if cand.match_score is None:
+                cand.match_score = cand.confidence
+                cand.confidence = (result.confidence if index == result.chosen_index
+                                   else min(cand.confidence, result.confidence))
+        return result
 
 
 # --------------------------------------------------------------------------
