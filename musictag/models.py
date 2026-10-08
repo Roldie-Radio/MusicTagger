@@ -140,7 +140,14 @@ class Candidate:
     """A possible identification of the file, with its own score."""
 
     source: str                                  # "acoustid", "musicbrainz-search", "existing-tags"
-    confidence: float = 0.0                      # 0..100
+    #: 0..100: how sure we would be if this were the answer - the track's
+    #: confidence if this candidate is picked, ambiguity and evidence cap
+    #: included. While scoring is still under way it holds the raw score.
+    confidence: float = 0.0
+    #: 0..100: how closely this entry agrees with the file, before ambiguity
+    #: and the evidence cap. Ranks the candidates; never shown as confidence.
+    #: None on results saved before it existed.
+    match_score: Optional[float] = None
     tags: TrackTags = field(default_factory=TrackTags)
     signals: list[Signal] = field(default_factory=list)
     release_summary: str = ""                    # "Album - Artist (1997, CD, GB)"
@@ -163,6 +170,7 @@ class Candidate:
         return cls(
             source=data.get("source", ""),
             confidence=data.get("confidence", 0.0),
+            match_score=data.get("match_score"),
             tags=TrackTags.from_dict(data.get("tags", {})),
             signals=[Signal(**s) for s in data.get("signals", [])],
             release_summary=data.get("release_summary", ""),
