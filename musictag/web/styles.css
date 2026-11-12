@@ -171,6 +171,14 @@ body {
 
 .header-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 
+/* Narrower than the buttons need: wrap them onto a second row rather than
+   push the last ones (Settings among them) off the edge of the window. */
+@media (max-width: 1240px) {
+  .app-header { height: auto; min-height: var(--header-h); padding-top: 10px; padding-bottom: 10px; }
+  .header-actions { flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+  .brand { flex: 0 1 auto; min-width: 150px; }
+}
+
 /* ========================================================================
    Buttons and inputs
    ======================================================================== */
@@ -218,6 +226,18 @@ body {
   color: var(--high-text);
 }
 .btn-export:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* The one action that changes what your files are called, so it is the
+   one button in the header that is filled in the accent colour and bold. */
+.btn-rename {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(16, 16, 32, .12), 0 0 0 3px var(--accent-soft);
+}
+.btn-rename:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-rename:disabled { box-shadow: none; }
 
 .field-with-button { display: flex; gap: 6px; }
 .field-with-button input { flex: 1; min-width: 0; }
@@ -1226,6 +1246,104 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 }
 
 .export-status { font-size: 12.5px; color: var(--text-muted); margin-right: auto; }
+
+/* --- rename files / find duplicates -------------------------------------- */
+
+.tidy-summary { margin-bottom: 14px; }
+.tidy-summary .tidy-lead { font-size: 14.5px; font-weight: 600; }
+.tidy-summary .help { margin-top: 4px; }
+.tidy-summary code { font-family: var(--mono); font-size: 12px; }
+.tidy-bulk { display: flex; gap: 8px; margin: 10px 0 0; }
+
+.tidy-warning {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--review-bg);
+  border: 1px solid color-mix(in srgb, var(--review) 30%, transparent);
+  font-size: 13px;
+}
+.tidy-warning-list { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+.tidy-warning-list div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rename-folder {
+  margin: 14px 0 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.rename-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.rename-row > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rename-old { color: var(--text-muted); }
+.rename-arrow { color: var(--text-faint); text-align: center; }
+.rename-new { font-weight: 550; }
+.rename-note { grid-column: 3; font-size: 11.5px; font-weight: 400; color: var(--review); }
+.tidy-more { padding: 10px 0 0; font-size: 12.5px; color: var(--text-muted); }
+
+.dupe-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  margin-bottom: 10px;
+}
+.dupe-group.is-off { opacity: .6; }
+.dupe-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.dupe-group-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dupe-group-kind { margin-left: auto; flex: 0 0 auto; font-size: 11.5px; color: var(--text-faint); }
+.dupe-group-warn { padding: 6px 12px; font-size: 12px; color: var(--review); background: var(--review-bg); }
+.dupe-copy {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.dupe-copy + .dupe-copy { border-top: 1px solid var(--border); }
+.dupe-copy-name { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dupe-copy-sub {
+  grid-column: 2;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dupe-copy-sub .mono { font-family: var(--mono); }
+.dupe-fate {
+  grid-row: span 2;
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: var(--none-bg);
+  color: var(--text-muted);
+}
+.dupe-fate-toggle { border: 1px solid transparent; font: inherit; font-size: 11.5px; cursor: pointer; }
+.dupe-fate-toggle:hover { border-color: var(--border-strong); }
+.dupe-fate-toggle.is-staying { background: transparent; border-color: var(--border-strong); }
+.dupe-copy.is-kept .dupe-fate { background: var(--high-bg); color: var(--high); font-weight: 600; }
+.dupe-group.is-off .dupe-fate { visibility: hidden; }
 
 /* ========================================================================
    Toasts

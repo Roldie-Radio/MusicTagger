@@ -212,7 +212,11 @@ class Journal:
                     # Something new may have been put at the original path
                     # since. Moving onto it would overwrite it, so the file
                     # comes back under a free name next to it instead.
-                    target = unique_path(src_path)
+                    # (A rename that only changed the case is the exception:
+                    # on a case-insensitive disk the "taken" path is this
+                    # very file.)
+                    target = (src_path if _same_file(src_path, dest_path)
+                              else unique_path(src_path))
                     if target != src_path:
                         result.messages.append(
                             f"{src_path} is taken now, restored as {target.name}")
@@ -268,6 +272,13 @@ class Journal:
             conn.execute("DELETE FROM batches WHERE id = ?", (batch_id,))
         conn.commit()
         return len(ids)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.exists() and a.samefile(b)
+    except OSError:
+        return False
 
 
 class _JournalledStep:

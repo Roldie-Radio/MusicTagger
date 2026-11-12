@@ -1009,3 +1009,171 @@ class TestConvert:
     def test_nothing_selected_is_refused(self, client):
         response = client.post("/api/convert", json={"paths": [], "format": "mp3"})
         assert response.status_code == 400
+
+
+# ===========================================================================
+# Rename files / find duplicates
+# ===========================================================================
+
+@pytest.fixture
+def tidy(client, tmp_path, monkeypatch):
+    """A library folder plus a throwaway journal for the rename/merge jobs."""
+    from musictag.journal import Journal
+    journal = Journal(tmp_path / "journal.db")
+    for module in ("rename", "merge", "apply"):
+        monkeypatch.setattr(f"musictag.{module}.get_journal", lambda: journal)
+    monkeypatch.setattr(server, "get_journal", lambda: journal)
+    music = tmp_path / "music"
+    client.config.library_paths = [str(music)]
+    return music
+
+
+class TestRenameFiles:
+    def test_plan_lists_new_names_and_changes_nothing(self, client, tidy):
+        track = make_ready_file(tidy / "track1.wav", title="Mysterons", track_no=1)
+        client.state.add([track])
+
+        plan = client.post("/api/rename/plan", json={"paths": []}).json()
+
+        assert plan["total"] == 1 and plan["rename_count"] == 1
+        assert plan["renames"][0]["path"] == track.path
+        assert plan["renames"][0]["dest"] == str(tidy / "01 - Mysterons.wav")
+        assert plan["template"] == client.config.file_template
+        assert (tidy / "track1.wav").exists()
+
+    def test_plan_with_nothing_scanned(self, client):
+        assert client.post("/api/rename/plan", json={"paths": []}).status_code == 400
+
+    def test_commit_renames_and_the_track_list_follows(self, client, tidy):
+        track = make_ready_file(tidy / "track1.wav", title="Mysterons", track_no=1)
+        client.state.add([track])
+        old = track.path
+
+        job = client.post("/api/rename/commit", json={"paths": []}).json()
+        status = wait_for_job(client, job["id"])
+
+        assert status["status"] == "done", status.get("error")
+        assert status["result"]["renamed"] == 1
+        new = str(tidy / "01 - Mysterons.wav")
+        assert Path(new).exists() and not Path(old).exists()
+        assert client.state.get(old) is None
+        assert client.state.get(new).filename == "01 - Mysterons.wav"
+
+    def test_commit_only_touches_the_selection(self, client, tidy):
+        a = make_ready_file(tidy / "a.wav", title="Mysterons")
+        b = make_ready_file(tidy / "b.wav", title="Roads")
+        client.state.add([a, b])
+        job = client.post("/api/rename/commit", json={"paths": [a.path]}).json()
+        wait_for_job(client, job["id"])
+        assert sorted(p.name for p in tidy.iterdir()) == ["Mysterons.wav", "b.wav"]
+
+    def test_duplicates_leave_the_track_list(self, client, tidy):
+        tags = dict(title="Roads", artist="Portishead", album="Dummy")
+        a = make_ready_file(tidy / "a.wav", **tags)
+        b = make_ready_file(tidy / "b.wav", **tags)
+        client.state.add([a, b])
+
+        plan = client.post("/api/rename/plan", json={"paths": []}).json()
+        assert plan["rename_count"] == 1 and plan["duplicate_count"] == 1
+
+        job = client.post("/api/rename/commit", json={"paths": []}).json()
+        status = wait_for_job(client, job["id"])
+
+        assert status["result"]["merged"] == 1
+        assert [t.path for t in client.state.all()] == [str(tidy / "Roads.wav")]
+        assert (tidy / "Duplicates").is_dir()
+
+    def test_rename_can_be_undone_from_history(self, client, tidy):
+        track = make_ready_file(tidy / "track1.wav", title="Mysterons")
+        client.state.add([track])
+        job = client.post("/api/rename/commit", json={"paths": []}).json()
+        batch = wait_for_job(client, job["id"])["result"]["batch_id"]
+
+        job = client.post("/api/undo", json={"batch_id": batch}).json()
+        assert wait_for_job(client, job["id"])["status"] == "done"
+        assert (tidy / "track1.wav").exists()
+
+
+class TestFindDuplicates:
+    def pair(self, client, tidy):
+        tags = dict(title="Roads", artist="Portishead", album="Dummy")
+        keep = make_ready_file(tidy / "Dummy" / "08 - Roads.wav", **tags)
+        extra = make_ready_file(tidy / "Downloads" / "roads.wav", **tags)
+        keep.props.bitrate_kbps, extra.props.bitrate_kbps = 320, 128
+        other = make_ready_file(tidy / "Dummy" / "01 - Mysterons.wav", title="Mysterons")
+        client.state.add([keep, extra, other])
+        return keep, extra
+
+    def test_plan_groups_copies_and_proposes_the_best(self, client, tidy):
+        keep, extra = self.pair(client, tidy)
+        plan = client.post("/api/duplicates/plan", json={"paths": []}).json()
+        assert plan["checked"] == 3 and plan["group_count"] == 1 and plan["extra_copies"] == 1
+        group = plan["groups"][0]
+        assert group["keep"] == keep.path
+        assert [t["path"] for t in group["tracks"]] == [keep.path, extra.path]
+        assert group["same_album"] is True
+
+    def test_plan_with_no_duplicates(self, client, tidy):
+        client.state.add([make_ready_file(tidy / "a.wav", title="Roads")])
+        plan = client.post("/api/duplicates/plan", json={"paths": []}).json()
+        assert plan["group_count"] == 0 and plan["groups"] == []
+
+    def test_merge_moves_the_rest_to_the_duplicates_folder(self, client, tidy):
+        keep, extra = self.pair(client, tidy)
+        job = client.post("/api/duplicates/merge", json={
+            "groups": [{"keep": keep.path, "remove": [extra.path]}]}).json()
+        status = wait_for_job(client, job["id"])
+
+        assert status["status"] == "done", status.get("error")
+        assert status["result"]["merged"] == 1
+        assert Path(keep.path).exists() and not Path(extra.path).exists()
+        assert (tidy / "Duplicates" / "Downloads" / "roads.wav").exists()
+        assert client.state.get(extra.path) is None
+        assert client.state.get(keep.path) is not None
+
+    def test_the_user_can_keep_a_different_copy(self, client, tidy):
+        keep, extra = self.pair(client, tidy)
+        job = client.post("/api/duplicates/merge", json={
+            "groups": [{"keep": extra.path, "remove": [keep.path]}]}).json()
+        wait_for_job(client, job["id"])
+        assert Path(extra.path).exists() and not Path(keep.path).exists()
+
+    def test_merge_refuses_files_it_is_not_tracking(self, client, tidy, tmp_path):
+        keep, _extra = self.pair(client, tidy)
+        outside = tmp_path / "elsewhere.wav"
+        _write_wav(outside)
+        response = client.post("/api/duplicates/merge", json={
+            "groups": [{"keep": keep.path, "remove": [str(outside)]}]})
+        assert response.status_code == 400
+        assert outside.exists()
+
+    def test_merge_refuses_a_file_named_twice(self, client, tidy):
+        keep, extra = self.pair(client, tidy)
+        for groups in ([{"keep": keep.path, "remove": [keep.path]}],
+                       [{"keep": keep.path, "remove": [extra.path]},
+                        {"keep": extra.path, "remove": [keep.path]}],
+                       [{"keep": keep.path, "remove": []}],
+                       []):
+            response = client.post("/api/duplicates/merge", json={"groups": groups})
+            assert response.status_code == 400, groups
+        assert Path(extra.path).exists()
+
+    def test_organise_reports_duplicates_it_set_aside(self, client, tidy):
+        client.config.organize_enabled = True
+        client.config.organize_root = ""
+        client.config.write_cover_art = False
+        client.config.write_cover_file = False
+        tags = dict(title="Roads", artist="Portishead", album="Dummy",
+                    album_artist="Portishead", track_no=8)
+        tracks = [make_ready_file(tidy / "in" / name, **tags) for name in ("a.wav", "b.wav")]
+        for t in tracks:
+            t.match = MatchResult(confidence=99, proposed=TrackTags(**tags))
+        client.state.add(tracks)
+
+        job = client.post("/api/apply", json={"paths": [], "organize": True}).json()
+        status = wait_for_job(client, job["id"])
+
+        assert status["status"] == "done", status.get("error")
+        assert status["result"]["merged"] == 1
+        assert [t.path for t in client.state.all()] == [
+            str(tidy / "Portishead" / "Dummy" / "08 - Roads.wav")]

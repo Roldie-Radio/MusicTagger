@@ -77,6 +77,10 @@ const state = {
   picker: { path: '', chosen: '', target: 'library' },
   exportPlan: null,
   exportResolutions: {},
+  //: { plan, paths } while the Rename files review is open.
+  rename: null,
+  //: { plan, choices: [{ include, keep }] } while the Duplicates review is open.
+  dupes: null,
 };
 
 // Guard against a stored list from an older version naming columns that no
@@ -1298,6 +1302,8 @@ async function refreshStatus() {
     $('#btnQuality').disabled = state.status.stats.total === 0
       || !state.status.capabilities.quality_analysis;
     $('#btnExport').disabled = state.status.stats.total === 0;
+    $('#btnRename').disabled = state.status.stats.total === 0;
+    $('#btnDuplicates').disabled = state.status.stats.total < 2;
     $('#btnClearAll').disabled = state.status.stats.total === 0;
     if (state.config && state.config.library_paths.length) {
       $('#libraryLabel').textContent = state.config.library_paths.join('  ·  ');
@@ -1544,6 +1550,313 @@ async function commitExportPlan() {
   });
 }
 
+/* -------------------------------------------------------- rename files */
+
+function dirname(path) {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return cut > 0 ? path.slice(0, cut) : '';
+}
+
+/** A file's folder, shown from the library folder down ("Dummy", not "D:\\Music\\Dummy"). */
+function shortDir(path) {
+  const dir = dirname(path);
+  const root = ((state.config && state.config.library_paths) || [])
+    .map((r) => r.replace(/[\\/]+$/, ''))
+    .find((r) => dir === r || dir.startsWith(r + '/') || dir.startsWith(r + '\\'));
+  if (!root) return dir;
+  return dir.length > root.length ? dir.slice(root.length + 1) : '(top of the music folder)';
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+
+async function openRenameFlow() {
+  const paths = selectedPaths();
+  let plan;
+  try { plan = await api('/api/rename/plan', { method: 'POST', body: { paths } }); }
+  catch (err) { toast(err.message, 'error'); return; }
+  state.rename = { plan, paths };
+  renderRenameModal();
+  $('#renameModal').hidden = false;
+}
+
+function renderRenameModal() {
+  const { plan, paths } = state.rename;
+  const changes = plan.rename_count + plan.duplicate_count;
+
+  const summary = $('#renameSummary');
+  summary.innerHTML = '';
+  summary.appendChild(el('div', 'tidy-lead', plan.rename_count
+    ? `${plural(plan.rename_count, 'file')} will be renamed after ${plan.rename_count === 1 ? 'its' : 'their'} song.`
+    : 'Every file already has the right name.'));
+  const bits = [paths.length
+    ? `Checked the ${plural(plan.total, 'selected track')}`
+    : `Checked all ${plural(plan.total, 'track')} in the list`];
+  if (plan.unchanged) bits.push(`${plan.unchanged} already named correctly`);
+  if (plan.skipped) bits.push(`${plan.skipped} left alone because ${plan.skipped === 1 ? 'it has' : 'they have'} no title`);
+  summary.appendChild(el('div', 'help', bits.join(' · ') + '.'));
+  const pattern = el('div', 'help');
+  pattern.append('Each file stays in the folder it is in; only its name changes. Naming pattern: ');
+  pattern.appendChild(el('code', null, plan.template));
+  pattern.append(' — change it in Settings → Plex & files.');
+  summary.appendChild(pattern);
+
+  const dupeBox = $('#renameDupes');
+  dupeBox.innerHTML = '';
+  if (plan.duplicate_count) {
+    const warn = el('div', 'tidy-warning');
+    warn.appendChild(el('div', null,
+      `${plural(plan.duplicate_count, 'file is a second copy', 'files are second copies')} of a track `
+      + `in the same folder. The better copy keeps the name; the other moves to the `
+      + `“${plan.duplicates_folder}” folder at the top of your music folder.`));
+    const list = el('div', 'tidy-warning-list');
+    for (const item of plan.duplicates.slice(0, 50)) {
+      const row = el('div', null, `${basename(item.path)}  →  ${plan.duplicates_folder}  (keeping ${basename(item.keeper)})`);
+      row.title = item.path;
+      list.appendChild(row);
+    }
+    if (plan.duplicate_count > 50) list.appendChild(el('div', null, `…and ${plan.duplicate_count - 50} more`));
+    warn.appendChild(list);
+    dupeBox.appendChild(warn);
+  }
+
+  const listBox = $('#renameList');
+  listBox.innerHTML = '';
+  let folder = null;
+  for (const item of plan.renames) {
+    const dir = dirname(item.path);
+    if (dir !== folder) {
+      folder = dir;
+      // bdi: the folder line is right-aligned-truncated (direction: rtl), which
+      // would otherwise also reorder the punctuation inside the path.
+      const head = el('div', 'rename-folder');
+      head.appendChild(el('bdi', null, shortDir(item.path)));
+      head.title = dir;
+      listBox.appendChild(head);
+    }
+    const row = el('div', 'rename-row');
+    const before = el('span', 'rename-old', basename(item.path));
+    before.title = item.path;
+    const after = el('span', 'rename-new', basename(item.dest));
+    after.title = item.dest;
+    row.appendChild(before);
+    row.appendChild(el('span', 'rename-arrow', '→'));
+    row.appendChild(after);
+    if (item.note) row.appendChild(el('span', 'rename-note', item.note));
+    listBox.appendChild(row);
+  }
+  if (plan.rename_count > plan.renames.length) {
+    listBox.appendChild(el('div', 'tidy-more',
+      `Showing the first ${plan.renames.length}. The other ${plan.rename_count - plan.renames.length} are renamed the same way.`));
+  }
+
+  $('#btnRenameCommit').disabled = changes === 0;
+  $('#btnRenameCommit').textContent = plan.rename_count
+    ? `Rename ${plural(plan.rename_count, 'file')}` : 'Rename';
+  $('#renameStatus').textContent = changes ? 'Can be undone from Settings → History.' : 'Nothing to do.';
+}
+
+function commitRename() {
+  if (!state.rename) return;
+  const { paths } = state.rename;
+  $('#renameModal').hidden = true;
+  startJob('/api/rename/commit', { paths }, (job) => {
+    // Renamed rows have new paths, so the old selection points at nothing.
+    state.selected.clear();
+    state.openPath = null;
+    state.rename = null;
+    const result = job.result || {};
+    if (result.failed && result.errors?.length) {
+      toast(`${plural(result.failed, 'file')} could not be renamed: ${result.errors[0].error}`, 'error');
+    }
+  });
+}
+
+/* ------------------------------------------------------ find duplicates */
+
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function copyFacts(copy) {
+  const bits = [(copy.container || '').toUpperCase()];
+  if (copy.lossless) bits.push('lossless');
+  else if (copy.bitrate_kbps) bits.push(`${copy.bitrate_kbps} kbps`);
+  if (copy.duration_s) bits.push(fmtDuration(copy.duration_s));
+  bits.push(fmtSize(copy.filesize));
+  if (copy.quality_score != null) bits.push(`quality ${copy.quality_score}`);
+  if (copy.has_art) bits.push('cover art');
+  return bits.filter(Boolean).join(' · ');
+}
+
+async function openDuplicatesFlow() {
+  const paths = selectedPaths();
+  let plan;
+  try { plan = await api('/api/duplicates/plan', { method: 'POST', body: { paths } }); }
+  catch (err) { toast(err.message, 'error'); return; }
+  if (!plan.group_count) {
+    toast(`No duplicates found among ${plural(plan.checked, 'track')}.`, 'success');
+    return;
+  }
+  state.dupes = {
+    plan,
+    // A copy on a different album is shown but left where it is: taking it
+    // away leaves that album a track short, which is the user's call to make.
+    choices: plan.groups.map((g) => ({
+      include: g.tracks.some((t) => t.path !== g.keep && t.same_album),
+      keep: g.keep,
+      stay: new Set(g.tracks.filter((t) => !t.same_album).map((t) => t.path)),
+    })),
+  };
+  renderDuplicatesModal();
+  $('#duplicatesModal').hidden = false;
+}
+
+function renderDuplicatesModal() {
+  const { plan, choices } = state.dupes;
+
+  const summary = $('#dupeSummary');
+  summary.innerHTML = '';
+  summary.appendChild(el('div', 'tidy-lead',
+    `${plural(plan.group_count, 'track')} found more than once (${plural(plan.extra_copies, 'extra copy', 'extra copies')}).`));
+  summary.appendChild(el('div', 'help',
+    `For each one, the best copy stays where it is and picks up any tags or cover art only `
+    + `the others had. The other copies move to a “${plan.duplicates_folder}” folder at the top of `
+    + `your music folder — nothing is deleted, and it can be undone from Settings → History. `
+    + `Click a copy to keep that one instead, or click “→ ${plan.duplicates_folder}” to leave a copy where it is.`));
+  if (plan.group_count > plan.groups.length) {
+    summary.appendChild(el('div', 'help',
+      `Showing the first ${plan.groups.length}. Merge these, then find duplicates again for the rest.`));
+  }
+  const bulk = el('div', 'tidy-bulk');
+  for (const [label, value] of [['Tick all', true], ['Untick all', false]]) {
+    const btn = el('button', 'btn btn-ghost btn-sm', label);
+    btn.addEventListener('click', () => {
+      choices.forEach((c, i) => {
+        c.include = value;
+        // Ticking a track whose copies were all staying has to move something.
+        if (value && !movingCopies(plan.groups[i], c).length) c.stay.clear();
+      });
+      renderDuplicatesModal();
+    });
+    bulk.appendChild(btn);
+  }
+  summary.appendChild(bulk);
+
+  const box = $('#dupeGroups');
+  const scroll = box.parentElement.scrollTop;
+  box.innerHTML = '';
+  plan.groups.forEach((group, index) => {
+    const choice = choices[index];
+    const card = el('div', `dupe-group${choice.include ? '' : ' is-off'}`);
+
+    const head = el('label', 'dupe-group-head');
+    const tick = el('input');
+    tick.type = 'checkbox';
+    tick.checked = choice.include;
+    tick.addEventListener('change', () => {
+      choice.include = tick.checked;
+      if (tick.checked && !movingCopies(group, choice).length) choice.stay.clear();
+      renderDuplicatesModal();
+    });
+    head.appendChild(tick);
+    const first = group.tracks[0];
+    head.appendChild(el('span', 'dupe-group-title',
+      [first.artist, first.title].filter(Boolean).join(' — ') || first.filename));
+    head.appendChild(el('span', 'dupe-group-kind',
+      group.kind === 'mbid' ? 'Same MusicBrainz recording' : 'Same title and artist'));
+    card.appendChild(head);
+
+    if (!group.same_album) {
+      card.appendChild(el('div', 'dupe-group-warn',
+        'Some of these are on different albums. Moving one leaves its album a track short, '
+        + 'so those stay where they are unless you choose otherwise.'));
+    }
+
+    for (const copy of group.tracks) {
+      const kept = copy.path === choice.keep;
+      const row = el('label', `dupe-copy${kept ? ' is-kept' : ''}`);
+      row.title = copy.path;
+      const radio = el('input');
+      radio.type = 'radio';
+      radio.name = `dupe-keep-${index}`;
+      radio.checked = kept;
+      radio.addEventListener('change', () => {
+        choice.keep = copy.path;
+        choice.stay.delete(copy.path);
+        choice.include = movingCopies(group, choice).length > 0;
+        renderDuplicatesModal();
+      });
+      row.appendChild(radio);
+      row.appendChild(el('span', 'dupe-copy-name', copy.filename));
+      if (kept) {
+        row.appendChild(el('span', 'dupe-fate',
+          copy.path === group.keep && group.reason ? `Keep · ${group.reason}` : 'Keep'));
+      } else {
+        const stays = choice.stay.has(copy.path);
+        const fate = el('button', `dupe-fate dupe-fate-toggle${stays ? ' is-staying' : ''}`,
+          stays ? 'Stays here' : `→ ${plan.duplicates_folder}`);
+        fate.type = 'button';
+        fate.title = stays ? `Click to move this copy to the ${plan.duplicates_folder} folder`
+          : 'Click to leave this copy where it is';
+        fate.addEventListener('click', (e) => {
+          e.preventDefault();          // the row is a label for "keep this one"
+          if (stays) choice.stay.delete(copy.path); else choice.stay.add(copy.path);
+          choice.include = movingCopies(group, choice).length > 0;
+          renderDuplicatesModal();
+        });
+        row.appendChild(fate);
+      }
+      const sub = el('span', 'dupe-copy-sub');
+      sub.append(`${copyFacts(copy)}${copy.album ? ' · ' + copy.album : ''} · `);
+      const where = el('span', 'mono', shortDir(copy.path));
+      where.title = copy.path;
+      sub.appendChild(where);
+      row.appendChild(sub);
+      card.appendChild(row);
+    }
+    box.appendChild(card);
+  });
+  box.parentElement.scrollTop = scroll;
+
+  const chosen = plan.groups.filter((g, i) => choices[i].include && movingCopies(g, choices[i]).length);
+  const moving = plan.groups.reduce(
+    (n, g, i) => n + (choices[i].include ? movingCopies(g, choices[i]).length : 0), 0);
+  $('#btnDupeCommit').disabled = chosen.length === 0;
+  $('#btnDupeCommit').textContent = chosen.length
+    ? `Merge ${plural(chosen.length, 'track')}` : 'Merge';
+  $('#dupeStatus').textContent = chosen.length
+    ? `${plural(moving, 'copy', 'copies')} will move to the ${plan.duplicates_folder} folder`
+    : 'Tick the tracks to merge';
+}
+
+/** The copies of ``group`` that would move, given what the user chose. */
+function movingCopies(group, choice) {
+  return group.tracks.map((t) => t.path)
+    .filter((p) => p !== choice.keep && !choice.stay.has(p));
+}
+
+function commitDuplicates() {
+  if (!state.dupes) return;
+  const { plan, choices } = state.dupes;
+  const groups = plan.groups
+    .map((group, index) => ({ group, choice: choices[index] }))
+    .filter(({ choice }) => choice.include)
+    .map(({ group, choice }) => ({ keep: choice.keep, remove: movingCopies(group, choice) }))
+    .filter((g) => g.remove.length);
+  if (!groups.length) return;
+  $('#duplicatesModal').hidden = true;
+  startJob('/api/duplicates/merge', { groups }, (job) => {
+    state.selected.clear();
+    state.openPath = null;
+    state.dupes = null;
+    const result = job.result || {};
+    if (result.failed && result.errors?.length) {
+      toast(`${plural(result.failed, 'file')} could not be moved: ${result.errors[0].error}`, 'error');
+    }
+  });
+}
+
 /* --------------------------------------------------------- folder picker */
 
 function updatePlexFolderLabel() {
@@ -1607,7 +1920,7 @@ const CONFIG_FIELDS = [
   'auto_apply_threshold', 'review_threshold', 'preserve_existing_tags',
   'write_cover_art', 'write_cover_file', 'write_musicbrainz_ids', 'id3v2_version',
   'various_artists_name', 'organize_enabled', 'organize_mode', 'organize_root',
-  'folder_template', 'file_template', 'ffmpeg_path', 'quality_workers',
+  'folder_template', 'file_template', 'merge_duplicates', 'ffmpeg_path', 'quality_workers',
   'quality_max_seconds', 'update_check_enabled',
 ];
 
@@ -1698,6 +2011,8 @@ async function loadHistory() {
       if (counts.tagged) parts.push(`${counts.tagged} tagged`);
       if (counts.moved) parts.push(`${counts.moved} moved`);
       if (counts.copied) parts.push(`${counts.copied} copied`);
+      if (counts.renamed) parts.push(`${counts.renamed} renamed`);
+      if (counts.merged) parts.push(`${counts.merged} duplicate(s) set aside`);
       body.appendChild(el('div', 'history-when',
         `${new Date(batch.started * 1000).toLocaleString()} · ${parts.join(', ') || batch.entry_count + ' entries'}`));
       item.appendChild(body);
@@ -1885,6 +2200,10 @@ function wire() {
     startJob('/api/quality', { paths, only_pending: paths.length === 0 });
   });
   $('#btnExport').addEventListener('click', openExportFlow);
+  $('#btnRename').addEventListener('click', openRenameFlow);
+  $('#btnRenameCommit').addEventListener('click', commitRename);
+  $('#btnDuplicates').addEventListener('click', openDuplicatesFlow);
+  $('#btnDupeCommit').addEventListener('click', commitDuplicates);
   $('#btnClearAll').addEventListener('click', async () => {
     const total = state.status ? state.status.stats.total : 0;
     if (!total || !confirm(
@@ -1908,6 +2227,8 @@ function wire() {
     state.offset = 0;
     state.exportPlan = null;
     state.exportResolutions = {};
+    state.rename = null;
+    state.dupes = null;
     toast('Track list cleared.', 'success');
     await refreshAll();
   });

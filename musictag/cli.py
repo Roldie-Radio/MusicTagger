@@ -246,11 +246,14 @@ def cmd_apply(args) -> int:
 
     applier = Applier(cfg)
     result = applier.apply(tracks, options, progress=_progress("Applying"))
-    state.persist(tracks)
+    state.remove(result.retired)
+    state.persist([t for t in tracks if t.path not in set(result.retired)])
 
     verb = "Would write" if args.dry_run else "Wrote"
     print(f"{verb} tags to {result.tagged} files. "
           f"Moved {result.moved}, copied {result.copied}, failed {result.failed}.")
+    if result.merged:
+        print(f"Set aside {result.merged} duplicate(s) in the Duplicates folder.")
     if args.dry_run and result.planned:
         print("\nFirst 20 planned moves:")
         for move in result.planned[:20]:

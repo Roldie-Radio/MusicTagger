@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 #: out tracks mid-identify.
 LIBRARY_JOBS = frozenset({
     "scan", "identify", "quality", "apply", "preview",
-    "export-plan", "export-commit", "undo", "convert",
+    "export-plan", "export-commit", "undo", "convert", "rename", "dedupe",
 })
 
 #: Library jobs that may overlap each other - Identify only touches a
@@ -35,7 +35,9 @@ SHAREABLE_JOBS = frozenset({"identify", "quality"})
 
 #: Jobs that change a track's proposed tags. A hand edit or candidate pick
 #: made while one runs would be silently overwritten (or be half-applied).
-EDIT_BLOCKING_JOBS = frozenset({"scan", "identify", "apply", "export-commit", "undo"})
+EDIT_BLOCKING_JOBS = frozenset({
+    "scan", "identify", "apply", "export-commit", "undo", "rename", "dedupe",
+})
 
 
 def jobs_conflict(a: str, b: str) -> bool:
@@ -51,6 +53,7 @@ JOB_LABELS = {
     "scan": "a scan", "identify": "tagging", "quality": "a quality check",
     "apply": "an apply", "preview": "a preview", "export-plan": "an export plan",
     "export-commit": "an export", "undo": "an undo", "convert": "a conversion",
+    "rename": "a rename", "dedupe": "a duplicate merge",
 }
 
 
