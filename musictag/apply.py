@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from .config import Config
+from .duplicates import identity_tags, rank_key, same_recording
 from .journal import get_journal
+from .library import load_track
+from .merge import absorb, retire
 from .models import Track, TrackTags
 from .organize import companion_files, plan_path
 from .providers.coverart import CoverArtClient
@@ -42,6 +45,8 @@ class ApplyReport:
     moved: int = 0
     copied: int = 0
     art_embedded: int = 0
+    #: Duplicate copies set aside in the Duplicates folder while organising.
+    merged: int = 0
     skipped: int = 0
     failed: int = 0
     dry_run: bool = False
@@ -51,6 +56,9 @@ class ApplyReport:
     #: arrived - not serialised. ``planned`` also lists moves that failed,
     #: and companion files must only follow tracks that really left.
     placed: list[tuple[Path, Path]] = field(default_factory=list)
+    #: Where each set-aside duplicate used to be - not serialised; the
+    #: server drops exactly these tracks from its state.
+    retired: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +67,7 @@ class ApplyReport:
             "moved": self.moved,
             "copied": self.copied,
             "art_embedded": self.art_embedded,
+            "merged": self.merged,
             "skipped": self.skipped,
             "failed": self.failed,
             "dry_run": self.dry_run,
@@ -147,6 +156,11 @@ class Applier:
             return
 
         source = Path(track.path)
+        if track.path in report.retired:
+            # Set aside earlier in this run, as the worse copy of a track
+            # that was filed where this one sat. Not a failure.
+            report.skipped += 1
+            return
         if not source.exists():
             report.failed += 1
             report.errors.append({"path": track.path, "error": "File no longer exists"})
@@ -189,6 +203,9 @@ class Applier:
                 return
 
             dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists() and self.cfg.merge_duplicates:
+                if self._merge_into_place(track, source, dest, report, journal):
+                    return
             dest = unique_path(dest)
             if self.cfg.organize_mode == "copy":
                 with journal.step(report.batch_id, "copy", str(source), dest=str(dest)):
@@ -208,6 +225,46 @@ class Applier:
 
         elif not options.dry_run and self.cfg.write_cover_file and art:
             self._write_cover_file(source.parent, art, report, journal)
+
+    # ------------------------------------------------------------------
+    def _merge_into_place(self, track: Track, source: Path, dest: Path,
+                          report: ApplyReport, journal) -> bool:
+        """``dest`` is taken. If by another copy of this track, keep the better one.
+
+        Returns True when the incoming file is done with - the copy already
+        there was at least as good, so the incoming one was set aside (or,
+        in copy mode, simply not copied). Returns False when ``dest`` is
+        still to be filled: either what was there was a worse copy and has
+        been set aside, or it is a different song and both stay.
+        """
+        existing = load_track(dest)
+        if existing.error:
+            return False
+        verdict = same_recording(identity_tags(track), existing.current,
+                                 a_duration=track.props.duration_s,
+                                 b_duration=existing.props.duration_s)
+        if not verdict or not verdict.same_album:
+            return False
+
+        def fill(keeper: Track, other: Track) -> None:
+            try:
+                absorb(keeper, [other], self.cfg, journal, report.batch_id)
+            except Exception as exc:  # noqa: BLE001 - filling tags is a bonus
+                log.warning("Could not copy tags onto %s: %s", keeper.path, exc)
+
+        if rank_key(track) > rank_key(existing):
+            fill(track, existing)
+            retire(dest, self.cfg, journal, report.batch_id)
+            report.merged += 1
+            report.retired.append(str(dest))
+            return False
+
+        fill(existing, track)
+        if self.cfg.organize_mode != "copy":
+            retire(source, self.cfg, journal, report.batch_id)
+            report.retired.append(str(source))
+        report.merged += 1
+        return True
 
     # ------------------------------------------------------------------
     def _artwork_for(self, track: Track) -> Optional[tuple[bytes, str]]:

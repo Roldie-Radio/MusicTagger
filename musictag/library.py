@@ -19,6 +19,11 @@ SKIP_DIRS = {
     "@eaDir", ".Trash", ".Trashes", "#recycle", ".plexignore",
 }
 
+#: Dropped into the folder merged-away duplicates are moved to. A folder
+#: holding it is never scanned or indexed - otherwise the next scan would
+#: find every set-aside copy again and offer to merge it all over again.
+DUPLICATES_MARKER = ".musictagger-duplicates"
+
 
 def iter_audio_files(roots: Iterable[str | Path], *, recursive: bool = True) -> Iterator[Path]:
     """Yield every supported audio file under ``roots``."""
@@ -39,6 +44,9 @@ def iter_audio_files(roots: Iterable[str | Path], *, recursive: bool = True) -> 
             continue
         for dirpath, dirnames, filenames in os.walk(root_path):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+            if DUPLICATES_MARKER in filenames:
+                dirnames[:] = []
+                continue
             if not recursive:
                 dirnames[:] = []
             for name in filenames:

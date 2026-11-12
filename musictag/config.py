@@ -75,6 +75,10 @@ class Config:
     folder_template: str = "{album_artist}/{album}{year_suffix}"
     file_template: str = "{disc_prefix}{track:02d} - {title}"
     keep_extra_files: bool = True             # move cover.jpg / .cue / .log alongside
+    # When renaming or organising lands two copies of the same track on one
+    # name: keep the better copy there and move the other into a "Duplicates"
+    # folder, instead of keeping both as "name" and "name (2)".
+    merge_duplicates: bool = True
 
     # --- quality analysis ------------------------------------------------
     quality_enabled: bool = True

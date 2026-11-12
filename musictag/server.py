@@ -25,15 +25,18 @@ from .apply import Applier, ApplyOptions
 from .cache import http_cache
 from .config import APP_DIR, get_config, set_config
 from .convert import FORMATS as CONVERT_FORMATS, convert_tracks
+from .duplicates import find_groups
 from .export_plex import commit_export, plan_export
 from .fingerprint import FPCALC_HOMEPAGE, fpcalc_download_url, install_fpcalc
 from .jobs import EDIT_BLOCKING_JOBS, LIBRARY_JOBS, Job, JobConflict, get_jobs
 from .journal import get_journal
 from .library import load_track, scan as scan_library
 from .matching import Matcher
+from .merge import DUPLICATES_DIRNAME, merge_groups
 from .models import Track, TrackTags, quality_scale
 from .organize import plan_all, plan_path
 from .quality import analyze_track
+from .rename import commit_renames, plan_renames
 from .state import get_state
 from .tags import SUPPORTED_EXTENSIONS, read_embedded_art
 from .update import check_for_update
@@ -123,6 +126,19 @@ class ConvertRequest(BaseModel):
 
 class UndoRequest(BaseModel):
     batch_id: str
+
+
+class RenameRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list)
+
+
+class DuplicateGroupChoice(BaseModel):
+    keep: str
+    remove: list[str] = Field(default_factory=list)
+
+
+class MergeRequest(BaseModel):
+    groups: list[DuplicateGroupChoice] = Field(default_factory=list)
 
 
 class ExportPlanRequest(BaseModel):
@@ -453,13 +469,18 @@ def api_apply(req: ApplyRequest) -> dict[str, Any]:
             progress=lambda done, total, path: job.progress(done, total, Path(path).name),
             cancelled=lambda: job.cancelled,
         )
+        # Before the moves below: a file can land on the very path a
+        # set-aside duplicate has just left.
+        state.remove(report.retired)
+        retired = set(report.retired)
         for track in tracks:
             old = originals[id(track)]
             if old != track.path:
                 state.replace_path(old, track)
-        state.persist(tracks)
+        state.persist([t for t in tracks if originals[id(t)] not in retired])
         verb = "Would apply" if req.dry_run else "Applied"
-        job.log(f"{verb} {report.tagged} tag writes, {report.moved} moves, {report.copied} copies")
+        job.log(f"{verb} {report.tagged} tag writes, {report.moved} moves, {report.copied} copies"
+                + (f", {report.merged} duplicate(s) set aside" if report.merged else ""))
         return report.to_dict()
 
     kind = "preview" if req.dry_run else "apply"
@@ -476,6 +497,124 @@ def api_preview_organize(req: SelectionRequest) -> dict[str, Any]:
     moves = [{"from": src, "to": dest} for src, dest in planned.items() if src != dest]
     return {"count": len(moves), "moves": moves[:500],
             "unchanged": len(planned) - len(moves)}
+
+
+# ===========================================================================
+# Renaming files in place
+# ===========================================================================
+
+def _rename_selection(paths: list[str]) -> list[Track]:
+    # Folder order, so the review reads the way the folder does.
+    return sorted(get_state().select(paths or None), key=lambda t: t.path.lower())
+
+
+@app.post("/api/rename/plan")
+def api_rename_plan(req: RenameRequest) -> dict[str, Any]:
+    """What would each file be called? Read-only, for the review dialog."""
+    cfg = get_config()
+    tracks = _rename_selection(req.paths)
+    if not tracks:
+        raise HTTPException(400, "Nothing to rename. Scan a folder first.")
+    plan = plan_renames(tracks, cfg, lookup=get_state().get)
+    payload = plan.to_dict()
+    payload["total"] = len(tracks)
+    payload["template"] = cfg.file_template
+    payload["duplicates_folder"] = DUPLICATES_DIRNAME
+    return payload
+
+
+@app.post("/api/rename/commit")
+def api_rename_commit(req: RenameRequest) -> dict[str, Any]:
+    """Rename the files. Each stays in its folder; only the name changes."""
+    cfg = get_config()
+    state = get_state()
+    tracks = _rename_selection(req.paths)
+    if not tracks:
+        raise HTTPException(400, "Nothing to rename. Scan a folder first.")
+
+    def run(job: Job):
+        # Planned again here rather than trusting what the dialog was shown:
+        # the plan names files to move, and only this side knows the disk.
+        plan = plan_renames(tracks, cfg, lookup=state.get)
+        report = commit_renames(
+            plan, cfg,
+            progress=lambda done, total, name: job.progress(done, total, name),
+            cancelled=lambda: job.cancelled,
+        )
+        # Set-aside copies first: a renamed file can land on the very path
+        # one of them has just left.
+        state.remove(report.retired)
+        for old, track in report.moved:
+            state.replace_path(old, track)
+        # Everything still tracked, not only what moved: a kept copy that
+        # stayed put may have gained tags from the duplicate it replaced.
+        state.persist([t for t in tracks if state.get(t.path) is t])
+        job.log(f"Renamed {report.renamed} file(s)"
+                + (f", set aside {report.merged} duplicate(s)" if report.merged else "")
+                + (f", {report.failed} failed" if report.failed else ""))
+        return report.to_dict()
+
+    return get_jobs().submit("rename", run, message="Renaming files").to_dict()
+
+
+# ===========================================================================
+# Duplicates inside the library
+# ===========================================================================
+
+@app.post("/api/duplicates/plan")
+def api_duplicates_plan(req: SelectionRequest) -> dict[str, Any]:
+    """Which tracks are in the library more than once? Read-only.
+
+    Works from what the scan already read, so there is no file access here
+    and it answers straight away even for a large library.
+    """
+    tracks = get_state().select(req.paths or None)
+    if not tracks:
+        raise HTTPException(400, "Nothing to check. Scan a folder first.")
+    groups = find_groups(tracks)
+    return {
+        "checked": len(tracks),
+        "group_count": len(groups),
+        "extra_copies": sum(len(g.tracks) - 1 for g in groups),
+        "groups": [g.to_dict() for g in groups[:500]],
+        "duplicates_folder": DUPLICATES_DIRNAME,
+    }
+
+
+@app.post("/api/duplicates/merge")
+def api_duplicates_merge(req: MergeRequest) -> dict[str, Any]:
+    """Keep one copy of each group; move the rest to the Duplicates folder."""
+    cfg = get_config()
+    state = get_state()
+    groups: list[tuple[Track, list[Track]]] = []
+    seen: set[str] = set()
+    for choice in req.groups:
+        paths = [choice.keep] + choice.remove
+        if not choice.remove or len(set(paths)) != len(paths) or seen & set(paths):
+            raise HTTPException(400, "Each file can be kept or set aside only once.")
+        seen.update(paths)
+        # Only files this app is tracking: the request names paths to move.
+        found = [state.get(p) for p in paths]
+        if any(t is None for t in found):
+            raise HTTPException(400, "The track list has changed. Find duplicates again.")
+        groups.append((found[0], found[1:]))
+    if not groups:
+        raise HTTPException(400, "Nothing to merge.")
+
+    def run(job: Job):
+        report = merge_groups(
+            groups, cfg,
+            progress=lambda done, total, name: job.progress(done, total, name),
+            cancelled=lambda: job.cancelled,
+        )
+        state.remove(report.retired)
+        state.persist([keeper for keeper, _others in groups])
+        job.log(f"Kept the best of {report.groups} track(s), "
+                f"moved {report.merged} duplicate(s) to the {DUPLICATES_DIRNAME} folder"
+                + (f", {report.failed} failed" if report.failed else ""))
+        return report.to_dict()
+
+    return get_jobs().submit("dedupe", run, message="Merging duplicates").to_dict()
 
 
 # ===========================================================================

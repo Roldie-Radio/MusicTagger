@@ -33,6 +33,14 @@
     </button>
     <button class="btn btn-primary" id="btnIdentify" disabled>Tag</button>
     <button class="btn btn-primary" id="btnQuality" disabled>Check Quality</button>
+    <button class="btn btn-rename" id="btnRename" disabled
+            title="Name each file after its song, e.g. 07 - Glory Box. Files stay in their folders.">
+      <span class="icon">✏️</span> <span>Rename files</span>
+    </button>
+    <button class="btn" id="btnDuplicates" disabled
+            title="Find tracks you have more than once and keep the best copy of each">
+      <span class="icon">🗂️</span> <span>Find duplicates</span>
+    </button>
     <button class="btn btn-export" id="btnExport" disabled>Export to Plex</button>
     <button class="btn" id="btnClearAll" disabled
             title="Empty the track list. Nothing on your disk is changed.">Clear all</button>
@@ -174,6 +182,45 @@
     <footer class="modal-foot">
       <button class="btn btn-ghost" data-close="previewModal">Close</button>
       <button class="btn btn-primary" id="btnPreviewApply">Apply for real</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ========================== Rename files ======================== -->
+<div class="modal" id="renameModal" hidden>
+  <div class="modal-card modal-wide">
+    <header class="modal-head">
+      <h2>Rename files</h2>
+      <button class="btn btn-icon btn-ghost" data-close="renameModal">✕</button>
+    </header>
+    <div class="modal-body">
+      <div class="tidy-summary" id="renameSummary"></div>
+      <div id="renameDupes"></div>
+      <div id="renameList"></div>
+    </div>
+    <footer class="modal-foot">
+      <span class="export-status" id="renameStatus"></span>
+      <button class="btn btn-ghost" data-close="renameModal">Cancel</button>
+      <button class="btn btn-primary" id="btnRenameCommit" disabled>Rename</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ========================= Find duplicates ====================== -->
+<div class="modal" id="duplicatesModal" hidden>
+  <div class="modal-card modal-wide">
+    <header class="modal-head">
+      <h2>Duplicates</h2>
+      <button class="btn btn-icon btn-ghost" data-close="duplicatesModal">✕</button>
+    </header>
+    <div class="modal-body">
+      <div class="tidy-summary" id="dupeSummary"></div>
+      <div id="dupeGroups"></div>
+    </div>
+    <footer class="modal-foot">
+      <span class="export-status" id="dupeStatus"></span>
+      <button class="btn btn-ghost" data-close="duplicatesModal">Cancel</button>
+      <button class="btn btn-primary" id="btnDupeCommit" disabled>Merge</button>
     </footer>
   </div>
 </div>
@@ -420,9 +467,26 @@
           <label class="field">
             <span>Filename template</span>
             <input type="text" id="cfg_file_template">
-            <small>Available: {track} {track:02d} {disc} {disc_prefix} {title} {artist}</small>
+            <small>Available: {track} {track:02d} {disc} {disc_prefix} {title} {artist}.
+                   The <strong>Rename files</strong> button uses this too.</small>
           </label>
           <div class="template-preview" id="templatePreview"></div>
+        </div>
+
+        <div class="field-group">
+          <h3>Duplicates</h3>
+          <label class="check">
+            <input type="checkbox" id="cfg_merge_duplicates">
+            <span>When renaming or reorganising puts two copies of the same track
+                  on one name, keep the better copy and move the other to a
+                  <strong>Duplicates</strong> folder</span>
+          </label>
+          <p class="help">
+            Switched off, both copies stay, as <em>name</em> and <em>name (2)</em>.
+            Nothing is ever deleted: the Duplicates folder sits at the top of your
+            music folder, is skipped when scanning, and every merge can be undone
+            from History.
+          </p>
         </div>
       </section>
 

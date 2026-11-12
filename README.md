@@ -276,6 +276,49 @@ little quality, and no conversion adds quality that was not in the source.
 Conversions show up in History; undo leaves the converted files in place for
 you to delete if you want.
 
+## Renaming files
+
+**Rename files** in the header names every file after its song -
+`track02_final(1).mp3` becomes `02 - Sour Times.mp3` - without moving
+anything: each file stays in the folder it is in. With tracks selected it
+renames just those; with nothing selected, everything in the list.
+
+You see every old and new name before anything changes. The names come from
+the *Filename template* in Settings → Plex & files (`{track:02d} - {title}` by
+default), filled in from the proposed tags when a track has been identified
+and from the tags already in the file otherwise. A file with no title is left
+alone. A rename shows up in History and can be undone.
+
+## Duplicates
+
+**Find duplicates** looks through the scanned tracks for ones you have more
+than once: files with the same MusicBrainz recording ID, or with the same
+title and a matching artist and length. For each track it proposes the best
+copy to keep - one with no serious quality findings first, then lossless over
+lossy, then resolution, bitrate, quality score, cover art and how complete the
+tags are - and you can pick a different one.
+
+Merging does two things:
+
+- the kept copy **picks up any tag or cover art it lacked** from the others
+  (nothing it already has is overwritten), and
+- the other copies **move to a `Duplicates` folder** at the top of your music
+  folder, under the same sub-folder they came from.
+
+Nothing is deleted - empty the `Duplicates` folder yourself once you are
+happy. The folder is skipped by later scans, and a merge can be undone from
+History like any other change. Copies of a song that sit on *different albums*
+(a studio album and a compilation, say) are listed but left where they are
+unless you choose otherwise, since taking one away leaves that album a track
+short.
+
+The same merge happens automatically when **Rename files** or **reorganising
+into Plex folders** would give two copies of one track the same name: the
+better copy gets the name and the other goes to `Duplicates`, instead of both
+being kept as `name` and `name (2)`. Two *different* songs that happen to
+share a name still both stay. Switch this off under Settings → Plex & files →
+Duplicates.
+
 ## Safety
 
 - **Nothing is written until you click Apply.** Scan and identify are read-only.
@@ -294,6 +337,8 @@ you to delete if you want.
   touching the library - otherwise the app tells you what to wait for rather
   than racing it. Hand edits are held off while tagging or applying, so they cannot be
   overwritten mid-run.
+- **Duplicates are set aside, never deleted.** A merged-away copy moves to
+  the `Duplicates` folder and undo puts it back.
 - **Export never overwrites.** A file already sitting where an export would
   land is kept; the incoming file gets a `(2)` name instead.
 - **Only this app can drive the local server.** It answers only requests
@@ -367,6 +412,10 @@ musictag/
   providers/       MusicBrainz, Cover Art Archive, shared HTTP with rate limiting
   matching.py      candidate generation, scoring, confidence
   organize.py      Plex path planning
+  rename.py        renaming files in place from their tags
+  duplicates.py    finding copies of the same track
+  merge.py         keeping the best copy, setting the rest aside
+  export_plex.py   moving reviewed tracks into the Plex folder
   apply.py         writing tags, artwork, moves
   journal.py       undo
   quality/         ffmpeg probe + defect analysis
